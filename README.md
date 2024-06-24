@@ -1,6 +1,6 @@
 # ZDM Python WebServer
 
-## Run Evaluation:POST ##
+## Run Evaluation ##
 ```
 curl -X POST "http://127.0.0.1:8000/eval" \
      -H "Content-Type: application/json" \
@@ -21,7 +21,7 @@ curl -X POST "http://127.0.0.1:8000/eval" \
            "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2"
          }'
 ```
-## Get Job Status:GET ##
+## Get Job Status ##
 ```
 curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)"
