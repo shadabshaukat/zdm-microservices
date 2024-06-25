@@ -2,6 +2,23 @@
 
 An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with FastAPI
 
+# Deploy
+
+```
+git clone https://github.com/shadabshaukat/zdm-webserver.git && cd zdm-webserver
+```
+
+Make sure the ZDM_HOME is set for the user which deploys this, preferably ‘zdmuser’
+
+```
+pip3 install -r requirements.txt
+```
+
+```
+uvicorn main:app —reload
+```
+
+
 # API's
 
 ## 1. Run Evaluation ##
