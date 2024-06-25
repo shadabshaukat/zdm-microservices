@@ -24,12 +24,12 @@ curl -X POST "http://127.0.0.1:8000/eval" \
 ## Get Job Status ##
 ```
 curl -X GET "http://127.0.0.1:8000/query/25" \
-     -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)"
+     -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)" | jq .
 ```
 OR
 ```
 echo -n 'zdmuser:YourPassword123#_' | base64
 
 curl -X GET "http://127.0.0.1:8000/query/25" \
-     -H "Authorization: Basic emRtdXNlcjpZb3VyUGFzc3dvcmQxMjMjXw=="
+     -H "Authorization: Basic emRtdXNlcjpZb3VyUGFzc3dvcmQxMjMjXw==" | jq .
 ```
