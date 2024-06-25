@@ -1,6 +1,10 @@
 # ZDM Python WebServer
 
-## Run Evaluation ##
+An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with FastAPI
+
+# API's
+
+## 1. Run Evaluation ##
 ```
 curl -X POST "http://127.0.0.1:8000/eval" \
      -H "Content-Type: application/json" \
@@ -21,7 +25,7 @@ curl -X POST "http://127.0.0.1:8000/eval" \
            "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2"
          }'
 ```
-## Get Job Status ##
+## 2. Get Job Status ##
 ```
 curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)" | jq .
@@ -32,4 +36,27 @@ echo -n 'zdmuser:YourPassword123#_' | base64
 
 curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic emRtdXNlcjpZb3VyUGFzc3dvcmQxMjMjXw==" | jq .
+```
+
+## Coming Soon ##
+
+ZDM Run APIs
+```
+/migrateOnline
+/migrateOffline
+/eval
+/query
+/resume
+/abort
+/addsyswallet
+/addosswallet
+/build
+/resume
+/suspend
+```
+
+Response File Creation APIs
+```
+/createResponseFileOnline
+/createResponseFileOffline
 ```
