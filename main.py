@@ -8,6 +8,11 @@ from passlib.context import CryptContext
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def display_routes():
+    routes = [route.path for route in app.routes]
+    print("Available API routes:", routes)
+
 security = HTTPBasic()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -104,6 +109,7 @@ class DBMigrationParams(BaseModel):
     srcarg1: Optional[str]
     srcarg2: Optional[str]
     srcarg3: Optional[str]
+    sourcesyswallet: str
     tgtroot: Optional[bool] = False
     tgtcred: Optional[str]
     tgtuser: Optional[str]
@@ -126,58 +132,116 @@ class DBMigrationParams(BaseModel):
     summary: Optional[bool] = False
     genfixup: Optional[str]
 
-
 @app.post("/migratedb/physical")
 def migratedb_physical(params: DBMigrationParams, username: str = Depends(verify_credentials)):
-    migration_script = f"""
-    #!/bin/bash
-    zdmcli migrate database \\
-        {'-sourcedb ' + params.sourcedb if params.sourcedb else ''} \\
-        {'-sourcesid ' + params.sourcesid if params.sourcesid else ''} \\
-        -rsp {params.rsp} \\
-        -sourcenode {params.sourcenode} \\
-        {'-targetnode ' + params.targetnode if params.targetnode else ''} \\
-        {'-targethome ' + params.targethome if params.targethome else ''} \\
-        {'-eval' if params.eval else ''} \\
-        {'-imagetype ' + params.imagetype if params.imagetype else ''} \\
-        {'-tdekeystorepasswd' if params.tdekeystorepasswd else ''} \\
-        {'-tgttdekeystorepasswd ' + params.tgttdekeystorepasswd if params.tgttdekeystorepasswd else ''} \\
-        {'-tdemasterkey ' + params.tdemasterkey if params.tdemasterkey else ''} \\
-        {'-useractiondata ' + params.useractiondata if params.useractiondata else ''} \\
-        {'-backupuser ' + params.backupuser if params.backupuser else ''} \\
-        {'-backuppasswd' if params.backuppasswd else ''} \\
-        {'-dvowner ' + params.dvowner if params.dvowner else ''} \\
-        {'-srcroot' if params.srcroot else ''} \\
-        {'-srccred ' + params.srccred if params.srccred else ''} \\
-        {'-srcuser ' + params.srcuser if params.srcuser else ''} \\
-        {'-srcsudouser ' + params.srcsudouser if params.srcsudouser else ''} \\
-        {'-srcsudopath ' + params.srcsudopath if params.srcsudopath else ''} \\
-        {'-srcauth ' + params.srcauth if params.srcauth else ''} \\
-        {'-srcarg1 ' + params.srcarg1 if params.srcarg1 else ''} \\
-        {'-srcarg2 ' + params.srcarg2 if params.srcarg2 else ''} \\
-        {'-srcarg3 ' + params.srcarg3 if params.srcarg3 else ''} \\
-        {'-tgtroot' if params.tgtroot else ''} \\
-        {'-tgtcred ' + params.tgtcred if params.tgtcred else ''} \\
-        {'-tgtuser ' + params.tgtuser if params.tgtuser else ''} \\
-        {'-tgtsudouser ' + params.tgtsudouser if params.tgtsudouser else ''} \\
-        {'-tgtsudopath ' + params.tgtsudopath if params.tgtsudopath else ''} \\
-        {'-tgtauth ' + params.tgtauth if params.tgtauth else ''} \\
-        {'-tgtarg1 ' + params.tgtarg1 if params.tgtarg1 else ''} \\
-        {'-tgtarg2 ' + params.tgtarg2 if params.tgtarg2 else ''} \\
-        {'-tgtarg3 ' + params.tgtarg3 if params.tgtarg3 else ''} \\
-        {'-schedule ' + params.schedule if params.schedule else ''} \\
-        {'-pauseafter ' + params.pauseafter if params.pauseafter else ''} \\
-        {'-stopafter ' + params.stopafter if params.stopafter else ''} \\
-        {'-listphases' if params.listphases else ''} \\
-        {'-ignoremissingpatches ' + ','.join(params.ignoremissingpatches) if params.ignoremissingpatches else ''} \\
-        {'-ignore ' + ','.join(params.ignore) if params.ignore else ''} \\
-        {'-incrementalinterval ' + str(params.incrementalinterval) if params.incrementalinterval else ''} \\
-        {'-advisor' if params.advisor else ''} \\
-        {'-ignoreadvisor' if params.ignoreadvisor else ''} \\
-        {'-skipadvisor' if params.skipadvisor else ''} \\
-        {'-summary' if params.summary else ''} \\
-        {'-genfixup ' + params.genfixup if params.genfixup else ''}
-    """
+    migration_script_lines = [
+        "#!/bin/bash",
+        "zdmcli migrate database \\",
+    ]
+
+    if params.sourcedb:
+        migration_script_lines.append(f"    -sourcedb {params.sourcedb} \\")
+    if params.sourcesid:
+        migration_script_lines.append(f"    -sourcesid {params.sourcesid} \\")
+
+    migration_script_lines.extend([
+        f"    -rsp {params.rsp} \\",
+        f"    -sourcenode {params.sourcenode} \\",
+    ])
+
+    if params.targetnode:
+        migration_script_lines.append(f"    -targetnode {params.targetnode} \\")
+    if params.targethome:
+        migration_script_lines.append(f"    -targethome {params.targethome} \\")
+    if params.eval:
+        migration_script_lines.append(f"    -eval \\")
+    if params.imagetype:
+        migration_script_lines.append(f"    -imagetype {params.imagetype} \\")
+    if params.tdekeystorepasswd:
+        migration_script_lines.append(f"    -tdekeystorepasswd {params.tdekeystorepasswd} \\")
+    if params.tgttdekeystorepasswd:
+        migration_script_lines.append(f"    -tgttdekeystorepasswd {params.tgttdekeystorepasswd} \\")
+    if params.tdemasterkey:
+        migration_script_lines.append(f"    -tdemasterkey {params.tdemasterkey} \\")
+    if params.useractiondata:
+        migration_script_lines.append(f"    -useractiondata {params.useractiondata} \\")
+    if params.backupuser:
+        migration_script_lines.append(f"    -backupuser {params.backupuser} \\")
+    if params.backuppasswd:
+        migration_script_lines.append(f"    -backuppasswd {params.backuppasswd} \\")
+    if params.dvowner:
+        migration_script_lines.append(f"    -dvowner {params.dvowner} \\")
+    if params.srcroot:
+        migration_script_lines.append(f"    -srcroot \\")
+    if params.srccred:
+        migration_script_lines.append(f"    -srccred {params.srccred} \\")
+    if params.srcuser:
+        migration_script_lines.append(f"    -srcuser {params.srcuser} \\")
+    if params.srcsudouser:
+        migration_script_lines.append(f"    -srcsudouser {params.srcsudouser} \\")
+    if params.srcsudopath:
+        migration_script_lines.append(f"    -srcsudopath {params.srcsudopath} \\")
+    if params.srcauth:
+        migration_script_lines.append(f"    -srcauth {params.srcauth} \\")
+    if params.srcarg1:
+        migration_script_lines.append(f"    -srcarg1 {params.srcarg1} \\")
+    if params.srcarg2:
+        migration_script_lines.append(f"    -srcarg2 {params.srcarg2} \\")
+    if params.srcarg3:
+        migration_script_lines.append(f"    -srcarg3 {params.srcarg3} \\")
+    if params.sourcesyswallet:
+        migration_script_lines.append(f"    -sourcesyswallet {params.sourcesyswallet} \\")
+    if params.tgtroot:
+        migration_script_lines.append(f"    -tgtroot \\")
+    if params.tgtcred:
+        migration_script_lines.append(f"    -tgtcred {params.tgtcred} \\")
+    if params.tgtuser:
+        migration_script_lines.append(f"    -tgtuser {params.tgtuser} \\")
+    if params.tgtsudouser:
+        migration_script_lines.append(f"    -tgtsudouser {params.tgtsudouser} \\")
+    if params.tgtsudopath:
+        migration_script_lines.append(f"    -tgtsudopath {params.tgtsudopath} \\")
+    if params.tgtauth:
+        migration_script_lines.append(f"    -tgtauth {params.tgtauth} \\")
+    if params.tgtarg1:
+        migration_script_lines.append(f"    -tgtarg1 {params.tgtarg1} \\")
+    if params.tgtarg2:
+        migration_script_lines.append(f"    -tgtarg2 {params.tgtarg2} \\")
+    if params.tgtarg3:
+        migration_script_lines.append(f"    -tgtarg3 {params.tgtarg3} \\")
+    if params.schedule:
+        migration_script_lines.append(f"    -schedule {params.schedule} \\")
+    if params.pauseafter:
+        migration_script_lines.append(f"    -pauseafter {params.pauseafter} \\")
+    if params.stopafter:
+        migration_script_lines.append(f"    -stopafter {params.stopafter} \\")
+    if params.listphases:
+        migration_script_lines.append(f"    -listphases \\")
+    if params.ignoremissingpatches:
+        ignoremissingpatches_str = ",".join(params.ignoremissingpatches)
+        migration_script_lines.append(f"    -ignoremissingpatches {ignoremissingpatches_str} \\")
+    if params.ignore:
+        ignore_str = ",".join(params.ignore)
+        migration_script_lines.append(f"    -ignore {ignore_str} \\")
+    if params.incrementalinterval is not None:
+        migration_script_lines.append(f"    -incrementalinterval {params.incrementalinterval} \\")
+    if params.advisor:
+        migration_script_lines.append(f"    -advisor \\")
+    if params.ignoreadvisor:
+        migration_script_lines.append(f"    -ignoreadvisor \\")
+    if params.skipadvisor:
+        migration_script_lines.append(f"    -skipadvisor \\")
+    if params.summary:
+        migration_script_lines.append(f"    -summary \\")
+    if params.genfixup:
+        migration_script_lines.append(f"    -genfixup {params.genfixup} \\")
+
+    # Remove trailing backslash from the last line
+    if migration_script_lines[-1].endswith("\\"):
+        migration_script_lines[-1] = migration_script_lines[-1][:-1]
+
+    migration_script = "\n".join(migration_script_lines)
+
     script_path = "/tmp/migratedb_physical.sh"
     with open(script_path, "w") as script_file:
         script_file.write(migration_script)
