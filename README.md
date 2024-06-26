@@ -5,7 +5,7 @@ An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with 
 # Deploy
 
 ```
-git clone https://github.com/shadabshaukat/zdm-webserver.git && cd zdm-webserver
+git clone https://github.com/shadabshaukat/zdm-microservices.git && cd zdm-microservices
 ```
 
 Make sure the ZDM_HOME is set for the user which deploys this, preferably ‘zdmuser’
