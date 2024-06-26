@@ -38,7 +38,7 @@ class EvalParams(BaseModel):
 
 @app.post("/eval")
 def eval(params: EvalParams, username: str = Depends(verify_credentials)):
-    migrate_script = f"""
+    eval_script = f"""
     #!/bin/bash
     zdmcli migrate database \\
         -sourcedb {params.sourcedb} \\
@@ -58,7 +58,7 @@ def eval(params: EvalParams, username: str = Depends(verify_credentials)):
     """
     script_path = "/tmp/eval.sh"
     with open(script_path, "w") as script_file:
-        script_file.write(migrate_script)
+        script_file.write(eval_script)
 
     os.chmod(script_path, 0o755)
 
@@ -76,7 +76,7 @@ def eval(params: EvalParams, username: str = Depends(verify_credentials)):
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Migration script failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Evaluation script failed: {e}")
 
 
 class DBMigrationParams(BaseModel):
@@ -218,6 +218,24 @@ def query(jobid: str, username: str = Depends(verify_credentials)):
         return {"status": "success", "output": result.stdout}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Query script failed: {e.stderr}")
+
+@app.get("/resume/{jobid}")
+def resume(jobid: str, username: str = Depends(verify_credentials)):
+    resume_script = f"""
+    #!/bin/bash
+    $ZDM_HOME/bin/zdmcli resume job -jobid {jobid}
+    """
+    script_path = "/tmp/resume.sh"
+    with open(script_path, "w") as script_file:
+        script_file.write(resume_script)
+
+    os.chmod(script_path, 0o755)
+
+    try:
+        result = subprocess.run(["/bin/bash", script_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        return {"status": "success", "output": result.stdout}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Resume script failed: {e.stderr}")
 
 if __name__ == "__main__":
     import uvicorn
