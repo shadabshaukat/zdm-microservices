@@ -21,6 +21,22 @@ uvicorn main:app —reload
 
 # API's
 
+Available API routes:
+
+```
+[
+'/openapi.json',
+ '/docs',
+ '/docs/oauth2-redirect',
+ '/redoc',
+ '/eval',
+ '/migratedb/physical',
+ '/query/{jobid}',
+ '/resume/{jobid}'
+]
+```
+
+
 ## 1. Run Evaluation ##
 ```
 curl -X POST "http://127.0.0.1:8000/eval" \
