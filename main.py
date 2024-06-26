@@ -214,10 +214,21 @@ def query(jobid: str, username: str = Depends(verify_credentials)):
     os.chmod(script_path, 0o755)
 
     try:
-        result = subprocess.run(["/bin/bash", script_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        return {"status": "success", "output": result.stdout}
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout
+        # Check if there's any output on stderr
+        if result.stderr:
+            output += "\nError output:\n" + result.stderr
+        return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Query script failed: {e.stderr}")
+        raise HTTPException(status_code=500, detail=f"Query Job failed: {e}")
+
 
 @app.get("/resume/{jobid}")
 def resume(jobid: str, username: str = Depends(verify_credentials)):
@@ -232,10 +243,21 @@ def resume(jobid: str, username: str = Depends(verify_credentials)):
     os.chmod(script_path, 0o755)
 
     try:
-        result = subprocess.run(["/bin/bash", script_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        return {"status": "success", "output": result.stdout}
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout
+        # Check if there's any output on stderr
+        if result.stderr:
+            output += "\nError output:\n" + result.stderr
+        return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Resume script failed: {e.stderr}")
+        raise HTTPException(status_code=500, detail=f"Resume Job failed: {e}")
+
 
 if __name__ == "__main__":
     import uvicorn
