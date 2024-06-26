@@ -75,11 +75,6 @@ curl -X GET "http://127.0.0.1:8000/query/25" \
 
 ZDM Run APIs
 ```
-/migrateOnline
-/migrateOffline
-/eval
-/query
-/resume
 /abort
 /addsyswallet
 /addosswallet
