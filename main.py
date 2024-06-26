@@ -76,13 +76,14 @@ def eval(params: EvalParams, username: str = Depends(verify_credentials)):
             universal_newlines=True
         )
         output = result.stdout
-        # Check if there's any output on stderr
+        # Since stderr=subprocess.PIPE is set, stderr will always be captured
         if result.stderr:
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Evaluation script failed: {e}")
-
+        # It's better to log the actual error message for debugging purposes
+        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 class DBMigrationParams(BaseModel):
     sourcedb: Optional[str]
@@ -257,13 +258,14 @@ def migratedb_physical(params: DBMigrationParams, username: str = Depends(verify
             universal_newlines=True
         )
         output = result.stdout
-        # Check if there's any output on stderr
+        # Since stderr=subprocess.PIPE is set, stderr will always be captured
         if result.stderr:
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Migration script failed: {e}")
-
+        # It's better to log the actual error message for debugging purposes
+        error_message = f"DB Migration Job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 @app.get("/query/{jobid}")
 def query(jobid: str, username: str = Depends(verify_credentials)):
@@ -286,13 +288,14 @@ def query(jobid: str, username: str = Depends(verify_credentials)):
             universal_newlines=True
         )
         output = result.stdout
-        # Check if there's any output on stderr
+        # Since stderr=subprocess.PIPE is set, stderr will always be captured
         if result.stderr:
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Query Job failed: {e}")
-
+        # It's better to log the actual error message for debugging purposes
+        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 @app.get("/resume/{jobid}")
 def resume(jobid: str, username: str = Depends(verify_credentials)):
@@ -315,13 +318,14 @@ def resume(jobid: str, username: str = Depends(verify_credentials)):
             universal_newlines=True
         )
         output = result.stdout
-        # Check if there's any output on stderr
+        # Since stderr=subprocess.PIPE is set, stderr will always be captured
         if result.stderr:
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Resume Job failed: {e}")
-
+        # It's better to log the actual error message for debugging purposes
+        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 if __name__ == "__main__":
     import uvicorn
