@@ -86,7 +86,6 @@ ZDM Run APIs
 /addsyswallet
 /addosswallet
 /build
-/resume
 /suspend
 ```
 
