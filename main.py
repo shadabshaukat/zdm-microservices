@@ -8,8 +8,6 @@ from passlib.context import CryptContext
 
 app = FastAPI()
 
-ZDM_HOME = os.getenv('ZDM_HOME')
-
 @app.on_event("startup")
 async def display_routes():
     routes = [route.path for route in app.routes]
@@ -18,22 +16,15 @@ async def display_routes():
 security = HTTPBasic()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-ZDMUSER_PASSWORD = os.getenv('ZDMUSER_PASSWORD')
-USER1_PASSWORD = os.getenv('USER1_PASSWORD')
-
-if not ZDMUSER_PASSWORD or not USER1_PASSWORD:
-    raise ValueError("Environment variables for user passwords are not set.")
-
 USER_CREDENTIALS = {
-    "zdmuser": pwd_context.hash(ZDMUSER_PASSWORD),
-    "user1": pwd_context.hash(USER1_PASSWORD)
+    "zdmuser": pwd_context.hash("YourPassword123#_"),
+    "user1": pwd_context.hash("YourPassword123#_")
 }
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not (pwd_context.verify(credentials.password, USER_CREDENTIALS.get(credentials.username))):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return credentials.username
-
 
 class EvalParams(BaseModel):
     sourcedb: str
@@ -54,7 +45,7 @@ class EvalParams(BaseModel):
 def eval(params: EvalParams, username: str = Depends(verify_credentials)):
     eval_script = f"""
     #!/bin/bash
-    {ZDM_HOME}/bin/zdmcli migrate database \\
+    zdmcli migrate database \\
         -sourcedb {params.sourcedb} \\
         -sourcenode {params.sourcenode} \\
         -srcauth {params.srcauth} \\
@@ -146,7 +137,7 @@ class DBMigrationParams(BaseModel):
 def migratedb_physical(params: DBMigrationParams, username: str = Depends(verify_credentials)):
     migration_script_lines = [
         "#!/bin/bash",
-        "{ZDM_HOME}/bin/zdmcli migrate database \\",
+        "zdmcli migrate database \\",
     ]
 
     if params.sourcedb:
@@ -280,7 +271,7 @@ def migratedb_physical(params: DBMigrationParams, username: str = Depends(verify
 def query(jobid: str, username: str = Depends(verify_credentials)):
     query_script = f"""
     #!/bin/bash
-    {ZDM_HOME}/bin/zdmcli query job -jobid {jobid}
+    $ZDM_HOME/bin/zdmcli query job -jobid {jobid}
     """
     script_path = "/tmp/query.sh"
     with open(script_path, "w") as script_file:
@@ -310,7 +301,7 @@ def query(jobid: str, username: str = Depends(verify_credentials)):
 def resume(jobid: str, username: str = Depends(verify_credentials)):
     resume_script = f"""
     #!/bin/bash
-    {ZDM_HOME}/bin/zdmcli resume job -jobid {jobid}
+    $ZDM_HOME/bin/zdmcli resume job -jobid {jobid}
     """
     script_path = "/tmp/resume.sh"
     with open(script_path, "w") as script_file:
