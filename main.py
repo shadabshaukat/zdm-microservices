@@ -45,7 +45,7 @@ class EvalParams(BaseModel):
 def eval(params: EvalParams, username: str = Depends(verify_credentials)):
     eval_script = f"""
     #!/bin/bash
-    zdmcli migrate database \\
+    $ZDM_HOME/bin/zdmcli migrate database \\
         -sourcedb {params.sourcedb} \\
         -sourcenode {params.sourcenode} \\
         -srcauth {params.srcauth} \\
@@ -137,7 +137,7 @@ class DBMigrationParams(BaseModel):
 def migratedb_physical(params: DBMigrationParams, username: str = Depends(verify_credentials)):
     migration_script_lines = [
         "#!/bin/bash",
-        "zdmcli migrate database \\",
+        "$ZDM_HOME/bin/zdmcli migrate database \\",
     ]
 
     if params.sourcedb:
@@ -326,6 +326,47 @@ def resume(jobid: str, username: str = Depends(verify_credentials)):
         # It's better to log the actual error message for debugging purposes
         error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
+
+class ResumeParams(BaseModel):
+    pauseafter: Optional[str] = None
+
+## API to Resume a Job and Pause Again at Another Stage
+@app.post("/resume_pauseagain/{jobid}")
+def resume_pauseagain(jobid: str, params: ResumeParams = Body(None), username: str = Depends(verify_credentials)):
+    resume_pauseagain_script = [
+        "#!/bin/bash",
+        f"$ZDM_HOME/bin/zdmcli resume job -jobid {jobid} \\"
+    ]
+
+    if params and params.pauseafter:
+        resume_pauseagain_script.append(f"    -pauseafter {params.pauseafter}")
+
+    resume_script = "\n".join(resume_pauseagain_script)
+
+    script_path = "/tmp/resume_pauseagain.sh"
+    with open(script_path, "w") as script_file:
+        script_file.write(resume_script)
+
+    os.chmod(script_path, 0o755)
+
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout
+        # Since stderr=subprocess.PIPE is set, stderr will always be captured
+        if result.stderr:
+            output += "\nError output:\n" + result.stderr
+        return {"status": "success", "output": output}
+    except subprocess.CalledProcessError as e:
+        # It's better to log the actual error message for debugging purposes
+        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
+
 
 if __name__ == "__main__":
     import uvicorn
