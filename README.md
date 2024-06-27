@@ -38,7 +38,8 @@ Available API routes:
  '/eval',
  '/migratedb/physical',
  '/query/{jobid}',
- '/resume/{jobid}'
+ '/resume/{jobid}',
+ '/resume_pauseagain/{jobid}'
 ]
 ```
 
