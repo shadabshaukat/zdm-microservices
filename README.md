@@ -40,6 +40,8 @@ Available API routes:
  '/query/{jobid}',
  '/resume/{jobid}',
  '/resume_pauseagain/{jobid}'
+ '/ReadJobLog',
+ '/createResponseFile',
 ]
 ```
 
@@ -78,6 +80,49 @@ curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic emRtdXNlcjpZb3VyUGFzc3dvcmQxMjMjXw==" | jq .
 ```
 
+## 3. DB Migration ##
+
+## 4. Resume Job $$
+
+## 5. Resume Job with Pause Again ##
+
+## 6. Create Response File ##
+
+```
+curl -X POST "http://your-fastapi-server-address/createResponseFile" \
+    -u zdmuser:YourPassword123#_ \
+    -H "Content-Type: application/json" \
+    -d '{
+          "filename": "MOBUAT",
+          "TGT_DB_UNIQUE_NAME": "MOBUAT_733_syd",
+          "MIGRATION_METHOD": "ONLINE_PHYSICAL",
+          "DATA_TRANSFER_MEDIUM": "DIRECT",
+          "PLATFORM_TYPE": "EXACS",
+          "NONCDBTOPDB_CONVERSION": "FALSE",
+          "NONCDBTOPDB_SWITCHOVER": "TRUE",
+          "TGT_SKIP_DATAPATCH": "TRUE",
+          "SRC_RMAN_CHANNELS": 4,
+          "TGT_RMAN_CHANNELS": 10,
+          "ZDM_RMAN_DIRECT_METHOD": "ACTIVE_DUPLICATE",
+          "ZDM_USE_DG_BROKER": "FALSE",
+          "ZDM_TGT_UPGRADE_TIMEZONE": "FALSE",
+          "ZDM_SKIP_TDE_WALLET_MIGRATION": "FALSE"
+    }'
+
+```
+
+## 7. Read Job Log ##
+
+```
+curl -X POST "http://<your_server_ip>:8000/ReadJobLog" \
+-H "Content-Type: application/json" \
+-u zdmuser:YourPassword123#_ \
+-d '{
+    "file_path": "/u01/app/zdmbase/chkbase/scheduled/job-38-2024-07-01-12:59:26.log"
+}'
+
+```
+
 ## Coming Soon ##
 
 ZDM Run APIs
@@ -89,8 +134,3 @@ ZDM Run APIs
 /suspend
 ```
 
-Response File Creation APIs
-```
-/createResponseFileOnline
-/createResponseFileOffline
-```
