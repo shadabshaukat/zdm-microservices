@@ -46,7 +46,7 @@ Available API routes:
 ```
 
 
-## 1. Run Evaluation ##
+## 1. Run Evaluation 
 ```
 curl -X POST "http://127.0.0.1:8000/eval" \
      -H "Content-Type: application/json" \
@@ -67,7 +67,7 @@ curl -X POST "http://127.0.0.1:8000/eval" \
            "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2"
          }'
 ```
-## 2. Get Job Status ##
+## 2. Get Job Status 
 ```
 curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)" | jq .
@@ -80,13 +80,35 @@ curl -X GET "http://127.0.0.1:8000/query/25" \
      -H "Authorization: Basic emRtdXNlcjpZb3VyUGFzc3dvcmQxMjMjXw==" | jq .
 ```
 
-## 3. DB Migration ##
+## 3. DB Migration 
+```
+curl -X POST "http://127.0.0.1:8000/migratedb/physical" \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)" \
+     -d '{
+           "sourcedb": "MOBUAT",
+           "sourcenode": "gdx7db01vm01-mgmt",
+           "srcauth": "zdmauth",
+           "srcarg1": "user:SVC_OCIMIG",
+           "srcarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
+           "srcarg3": "sudo_location:/usr/bin/sudo",
+           "targetnode": "aeocidb01vn-4hja81",
+           "tgtauth": "zdmauth",
+           "tgtarg1": "user:opc",
+           "tgtarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
+           "tgtarg3": "sudo_location:/usr/bin/sudo",
+           "rsp": "/home/zdmuser/migration/MOBUAT/MOBUAT.rsp",
+           "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2",
+           "pauseafter": "ZDM_CONFIGURE_DG_SRC"
+         }'
+```
 
-## 4. Resume Job $$
+## 4. Resume Job 
 
-## 5. Resume Job with Pause Again ##
 
-## 6. Create Response File ##
+## 5. Resume Job with Pause Again 
+
+## 6. Create Response File 
 
 ```
 curl -X POST "http://your-fastapi-server-address/createResponseFile" \
@@ -111,7 +133,7 @@ curl -X POST "http://your-fastapi-server-address/createResponseFile" \
 
 ```
 
-## 7. Read Job Log ##
+## 7. Read Job Log 
 
 ```
 curl -X POST "http://<your_server_ip>:8000/ReadJobLog" \
