@@ -375,6 +375,73 @@ def resume_pauseagain(jobid: str, params: ResumeParams = Body(None), username: s
         error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
 
+class ResponseFileParams(BaseModel):
+    filename: str
+    TGT_DB_UNIQUE_NAME: Optional[str] = None
+    MIGRATION_METHOD: Optional[str] = None
+    DATA_TRANSFER_MEDIUM: Optional[str] = None
+    PLATFORM_TYPE: Optional[str] = None
+    BACKUP_PATH: Optional[str] = None
+    HOST: Optional[str] = None
+    OPC_CONTAINER: Optional[str] = None
+    NONCDBTOPDB_CONVERSION: Optional[str] = None
+    NONCDBTOPDB_SWITCHOVER: Optional[str] = None
+    SKIP_FALLBACK: Optional[str] = None
+    TGT_SKIP_DATAPATCH: Optional[str] = None
+    SRC_RMAN_CHANNELS: Optional[int] = None
+    TGT_RMAN_CHANNELS: Optional[int] = None
+    ZDM_BACKUP_TAG: Optional[str] = None
+    ZDM_RMAN_DIRECT_METHOD: Optional[str] = None
+    ZDM_USE_DG_BROKER: Optional[str] = None
+    ZDM_TGT_UPGRADE_TIMEZONE: Optional[str] = None
+    ZDM_SKIP_TDE_WALLET_MIGRATION: Optional[str] = None
+
+@app.post("/createResponseFile")
+def create_response_file(params: ResponseFileParams, username: str = Depends(verify_credentials)):
+    rsp_content = (
+        f"TGT_DB_UNIQUE_NAME={params.TGT_DB_UNIQUE_NAME or ''}\n"
+        f"MIGRATION_METHOD={params.MIGRATION_METHOD or ''}\n"
+        f"DATA_TRANSFER_MEDIUM={params.DATA_TRANSFER_MEDIUM or ''}\n"
+        f"PLATFORM_TYPE={params.PLATFORM_TYPE or ''}\n"
+        f"BACKUP_PATH={params.BACKUP_PATH or ''}\n"
+        f"HOST={params.HOST or ''}\n"
+        f"OPC_CONTAINER={params.OPC_CONTAINER or ''}\n"
+        f"NONCDBTOPDB_CONVERSION={params.NONCDBTOPDB_CONVERSION or ''}\n"
+        f"NONCDBTOPDB_SWITCHOVER={params.NONCDBTOPDB_SWITCHOVER or ''}\n"
+        f"SKIP_FALLBACK={params.SKIP_FALLBACK or ''}\n"
+        f"TGT_SKIP_DATAPATCH={params.TGT_SKIP_DATAPATCH or ''}\n"
+        f"SRC_RMAN_CHANNELS={params.SRC_RMAN_CHANNELS or ''}\n"
+        f"TGT_RMAN_CHANNELS={params.TGT_RMAN_CHANNELS or ''}\n"
+        f"ZDM_BACKUP_TAG={params.ZDM_BACKUP_TAG or ''}\n"
+        f"ZDM_RMAN_DIRECT_METHOD={params.ZDM_RMAN_DIRECT_METHOD or ''}\n"
+        f"ZDM_USE_DG_BROKER={params.ZDM_USE_DG_BROKER or ''}\n"
+        f"ZDM_TGT_UPGRADE_TIMEZONE={params.ZDM_TGT_UPGRADE_TIMEZONE or ''}\n"
+        f"ZDM_SKIP_TDE_WALLET_MIGRATION={params.ZDM_SKIP_TDE_WALLET_MIGRATION or ''}\n"
+    )
+
+    script_path = f"/tmp/{params.filename}.rsp"
+    with open(script_path, "w") as rsp_file:
+        rsp_file.write(rsp_content)
+
+    return {"status": "success", "message": f"Response file {params.filename}.rsp created successfully", "path": script_path}
+
+class LogFileParams(BaseModel):
+    file_path: str
+
+@app.post("/ReadJobLog")
+def read_job_log(params: LogFileParams, username: str = Depends(verify_credentials)):
+    file_path = params.file_path
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        with open(file_path, 'r') as file:
+            content = file.read()
+        return {"status": "success", "content": content}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+
 
 if __name__ == "__main__":
     import uvicorn
