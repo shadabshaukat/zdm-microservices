@@ -110,12 +110,21 @@ curl -X POST "http://127.0.0.1:8000/migratedb/physical" \
 ## 4. Resume Job 
 
 ```
+curl -X POST "http://localhost:8000/resume/<jobid>" -u zdmuser:YourPassword123#_
 ```
 
 ## 5. Resume Job with Pause Again 
 
 ```
+curl -X POST "http://localhost:8000/resume_pauseagain/<jobid>" -u zdmuser:YourPassword123#_ -H "Content-Type: application/json" -d '{
+    "skip": "SWITCHOVER"
+}'
+```
 
+```
+curl -X POST "http://localhost:8000/resume_pauseagain/<jobid>" -u zdmuser:YourPassword123#_ -H "Content-Type: application/json" -d '{
+    "pauseafter": "ZDM_CONFIGURE_DG_SRC"
+}'
 ```
 
 ## 6. Create Response File 
@@ -159,6 +168,7 @@ curl -X POST "http://<your_server_ip>:8000/ReadJobLog" \
 
 ```
 curl -X POST "http://your_server_address/OraPKICreateWallet" \
+-u zdmuser:YourPassword123#_ \
 -H "Content-Type: application/json" \
 -d '{
   "wallet_path": "/home/zdmuser/migration/19cwallet_nonprod"
@@ -169,6 +179,7 @@ curl -X POST "http://your_server_address/OraPKICreateWallet" \
 
 ```
 curl -X POST "http://your_server_address/MkstoreCreateCredential" \
+-u zdmuser:YourPassword123#_ \
 -H "Content-Type: application/json" \
 -d '{
   "wallet_path": "/home/zdmuser/migration/19cwallet_nonprod",
