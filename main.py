@@ -34,6 +34,12 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return credentials.username
 
+def ensure_zdm_home():
+    if not os.getenv("ZDM_HOME"):
+        raise HTTPException(status_code=500, detail="ZDM_HOME environment variable is not set")
+
+ensure_zdm_home()
+
 class EvalParams(BaseModel):
     sourcedb: str
     sourcenode: str
@@ -526,7 +532,59 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
         error_message = f"Create Credential failed with return code {e.returncode}: {e.stderr}"
         raise HTTPException(status_code=500, detail=error_message)
 
+@app.post("/abort/{jobid}")
+def abort(jobid: str, username: str = Depends(verify_credentials)):
+    abort_script = f"""
+    #!/bin/bash
+    $ZDM_HOME/bin/zdmcli abort job -jobid {jobid}
+    """
+    abort_script_path = "/tmp/abort.sh"
+    with open(abort_script_path, "w", newline='\n') as script_file:
+        script_file.write(abort_script)
 
+    os.chmod(abort_script_path, 0o755)
+
+    try:
+        result = subprocess.run(
+            ["bash", abort_script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\nError output:\n" + result.stderr
+        return {"status": "success", "output": output}
+    except subprocess.CalledProcessError as e:
+        error_message = f"Abort job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
+
+@app.post("/suspend/{jobid}")
+def suspend(jobid: str, username: str = Depends(verify_credentials)):
+    suspend_script = f"""
+    #!/bin/bash
+    $ZDM_HOME/bin/zdmcli suspend job -jobid {jobid}
+    """
+    suspend_script_path = "/tmp/suspend.sh"
+    with open(suspend_script_path, "w", newline='\n') as script_file:
+        script_file.write(suspend_script)
+
+    os.chmod(suspend_script_path, 0o755)
+
+    try:
+        result = subprocess.run(
+            ["bash", suspend_script_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\nError output:\n" + result.stderr
+        return {"status": "success", "output": output}
+    except subprocess.CalledProcessError as e:
+        error_message = f"Suspend job failed with return code {e.returncode}: {e.output}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 if __name__ == "__main__":
     import uvicorn
