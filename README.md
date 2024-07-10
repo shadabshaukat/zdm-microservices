@@ -109,8 +109,14 @@ curl -X POST "http://127.0.0.1:8000/migratedb/physical" \
 
 ## 4. Resume Job 
 
+```
+```
 
 ## 5. Resume Job with Pause Again 
+
+```
+
+```
 
 ## 6. Create Response File 
 
