@@ -149,13 +149,16 @@ curl -X POST "http://<your_server_ip>:8000/ReadJobLog" \
 
 ```
 
+## 8. Create Oracle Wallet - ORAPKI
+
+## 9. Create Credential - MKSTORE
+
+
 ## Coming Soon ##
 
 ZDM Run APIs
 ```
 /abort
-/addsyswallet
-/addosswallet
 /build
 /suspend
 ```
