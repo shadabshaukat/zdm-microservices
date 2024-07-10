@@ -4,6 +4,8 @@ An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with 
 
 # Deploy
 
+Minimum Python3.6 required
+
 ```
 git clone https://github.com/shadabshaukat/zdm-microservices.git && cd zdm-microservices
 ```
@@ -14,6 +16,8 @@ Change the values in zdm.env as per your environment
 
 ```
 source zdm.env
+
+echo $ZDM_HOME
 ```
 
 ```
@@ -21,7 +25,7 @@ pip3 install -r requirements.txt
 ```
 
 ```
-uvicorn main:app —reload
+python3 main.py
 ```
 
 
