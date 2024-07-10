@@ -151,12 +151,31 @@ curl -X POST "http://<your_server_ip>:8000/ReadJobLog" \
 
 ## 8. Create Oracle Wallet - ORAPKI
 
+```
+curl -X POST "http://your_server_address/OraPKICreateWallet" \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_path": "/home/zdmuser/migration/19cwallet_nonprod"
+}'
+```
+
 ## 9. Create Credential - MKSTORE
+
+```
+curl -X POST "http://your_server_address/MkstoreCreateCredential" \
+-H "Content-Type: application/json" \
+-d '{
+  "wallet_path": "/home/zdmuser/migration/19cwallet_nonprod",
+  "user": "sysuser",
+  "password": "yourpassword1234#"
+}'
+```
 
 
 ## Coming Soon ##
 
-ZDM Run APIs
+ZDM APIs
+
 ```
 /abort
 /build
