@@ -305,7 +305,7 @@ def query(jobid: str, username: str = Depends(verify_credentials)):
         error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
 
-@app.get("/resume/{jobid}")
+@app.post("/resume/{jobid}")
 def resume(jobid: str, username: str = Depends(verify_credentials)):
     resume_script = f"""
     #!/bin/bash
@@ -337,23 +337,27 @@ def resume(jobid: str, username: str = Depends(verify_credentials)):
 
 class ResumeParams(BaseModel):
     pauseafter: Optional[str] = None
+    skip: Optional[str] = None
 
 ## API to Resume a Job and Pause Again at Another Stage
 @app.post("/resume_pauseagain/{jobid}")
 def resume_pauseagain(jobid: str, params: ResumeParams = Body(None), username: str = Depends(verify_credentials)):
     resume_pauseagain_script = [
         "#!/bin/bash",
-        f"$ZDM_HOME/bin/zdmcli resume job -jobid {jobid} \\"
+        f"$ZDM_HOME/bin/zdmcli resume job -jobid {jobid}"
     ]
 
-    if params and params.pauseafter:
-        resume_pauseagain_script.append(f"    -pauseafter {params.pauseafter}")
+    if params.pauseafter:
+        resume_pauseagain_script.append(f" -pauseafter {params.pauseafter}")
+    if params.skip:
+        resume_pauseagain_script.append(f" -skip {params.skip}")
 
-    resume_script = "\n".join(resume_pauseagain_script)
+    # Join the script lines into a single command
+    resume_script_v2 = " \\\n".join(resume_pauseagain_script)
 
     script_path = "/tmp/resume_pauseagain.sh"
     with open(script_path, "w") as script_file:
-        script_file.write(resume_script)
+        script_file.write(resume_script_v2)
 
     os.chmod(script_path, 0o755)
 
@@ -366,14 +370,13 @@ def resume_pauseagain(jobid: str, params: ResumeParams = Body(None), username: s
             universal_newlines=True
         )
         output = result.stdout
-        # Since stderr=subprocess.PIPE is set, stderr will always be captured
         if result.stderr:
             output += "\nError output:\n" + result.stderr
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
-        # It's better to log the actual error message for debugging purposes
-        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
+        error_message = f"Resume Pause Again Job failed with return code {e.returncode}: {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
+
 
 class ResponseFileParams(BaseModel):
     filename: str
@@ -440,6 +443,88 @@ def read_job_log(params: LogFileParams, username: str = Depends(verify_credentia
         return {"status": "success", "content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
+
+class WalletFileParams(BaseModel):
+    wallet_path: str
+
+@app.post("/OraPKICreateWallet")
+def create_wallet(params: WalletFileParams, username: str = Depends(verify_credentials)):
+    wallet_path = params.wallet_path
+    create_wallet_script = [
+        "#!/bin/bash",
+        f"$ZDM_HOME/bin/orapki wallet create -wallet {wallet_path} -auto_login_only"
+    ]
+
+    # Join the script lines into a single command
+    create_wallet_command = " \\\n".join(create_wallet_script)
+
+    script_path = "/tmp/create_wallet.sh"
+    with open(script_path, "w") as script_file:
+        script_file.write(create_wallet_command)
+
+    os.chmod(script_path, 0o755)
+
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout.strip()
+        error_output = result.stderr.strip()
+
+        if result.returncode == 0:
+            return {"status": "success", "output": output}
+        else:
+            raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
+    except subprocess.CalledProcessError as e:
+        error_message = f"Create Wallet failed with return code {e.returncode}: {e.stderr}"
+        raise HTTPException(status_code=500, detail=error_message)
+
+class MkstoreParams(BaseModel):
+    wallet_path: str
+    user: str
+    password: str
+
+@app.post("/MkstoreCreateCredential")
+def create_credential(params: MkstoreParams, username: str = Depends(verify_credentials)):
+    wallet_path = params.wallet_path
+    user = params.user
+    password = params.password
+    create_credential_script = [
+        "#!/bin/bash",
+        f"$ZDM_HOME/bin/mkstore -wrl {wallet_path} -createCredential store {user} {password}"
+    ]
+
+    # Join the script lines into a single command
+    create_credential_command = " \\\n".join(create_credential_script)
+
+    script_path = "/tmp/create_credential.sh"
+    with open(script_path, "w") as script_file:
+        script_file.write(create_credential_command)
+
+    os.chmod(script_path, 0o755)
+
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        output = result.stdout.strip()
+        error_output = result.stderr.strip()
+
+        if result.returncode == 0:
+            return {"status": "success", "output": output}
+        else:
+            raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
+    except subprocess.CalledProcessError as e:
+        error_message = f"Create Credential failed with return code {e.returncode}: {e.stderr}"
+        raise HTTPException(status_code=500, detail=error_message)
 
 
 
