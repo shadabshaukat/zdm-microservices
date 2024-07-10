@@ -46,6 +46,10 @@ Available API routes:
  '/resume_pauseagain/{jobid}'
  '/ReadJobLog',
  '/createResponseFile',
+'/OraPKICreateWallet',
+'/MkstoreCreateCredential',
+'/abort/{jobid}',
+'/suspend/{jobid}'
 ]
 ```
 
@@ -188,13 +192,21 @@ curl -X POST "http://your_server_address/MkstoreCreateCredential" \
 }'
 ```
 
-
-## Coming Soon ##
-
-ZDM APIs
+## 10. Abort Job
 
 ```
-/abort
-/suspend
+curl -X POST "http://localhost:8000/abort/<jobid>" -u zdmuser:YourPassword123#_
 ```
+
+## 11. Suspend Job
+
+```
+curl -X POST "http://localhost:8000/suspend/<jobid>" -u zdmuser:YourPassword123#_
+```
+
+
+# Coming Soon #
+
+- ZDM Microservices Hardening
+- Release of v1
 
