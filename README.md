@@ -195,7 +195,6 @@ ZDM APIs
 
 ```
 /abort
-/build
 /suspend
 ```
 
