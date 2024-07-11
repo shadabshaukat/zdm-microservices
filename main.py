@@ -54,6 +54,7 @@ class EvalParams(BaseModel):
     tgtarg3: str
     rsp: str
     sourcesyswallet: str
+    ignore: str
 
 @app.post("/eval")
 def eval(params: EvalParams, username: str = Depends(verify_credentials)):
@@ -73,6 +74,7 @@ def eval(params: EvalParams, username: str = Depends(verify_credentials)):
         -tgtarg3 {params.tgtarg3} \\
         -rsp {params.rsp} \\
         -sourcesyswallet {params.sourcesyswallet} \\
+        -ignore {params.ignore} \\
         -eval
     """
     script_path = "/tmp/eval.sh"
