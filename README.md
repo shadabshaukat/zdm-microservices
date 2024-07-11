@@ -95,20 +95,21 @@ curl -X POST "http://127.0.0.1:8000/migratedb/physical" \
      -H "Content-Type: application/json" \
      -H "Authorization: Basic $(echo -n 'zdmuser:YourPassword123#_' | base64)" \
      -d '{
-           "sourcedb": "MOBUAT",
-           "sourcenode": "gdx7db01vm01-mgmt",
-           "srcauth": "zdmauth",
-           "srcarg1": "user:SVC_OCIMIG",
-           "srcarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
-           "srcarg3": "sudo_location:/usr/bin/sudo",
-           "targetnode": "aeocidb01vn-4hja81",
-           "tgtauth": "zdmauth",
-           "tgtarg1": "user:opc",
-           "tgtarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
-           "tgtarg3": "sudo_location:/usr/bin/sudo",
-           "rsp": "/home/zdmuser/migration/MOBUAT/MOBUAT.rsp",
-           "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2",
-           "pauseafter": "ZDM_CONFIGURE_DG_SRC"
+      "sourcedb": "GISTSTDB",
+      "sourcenode": "19c_vmcluster_node1_src",
+      "srcauth": "zdmauth",
+      "srcarg1": "user:SVC_OCIMIG",
+      "srcarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
+      "srcarg3": "sudo_location:/usr/bin/sudo",
+      "targetnode": "aeocidb01vn-4hja81",
+      "tgtauth": "zdmauth",
+      "tgtarg1": "user:opc",
+      "tgtarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
+      "tgtarg3": "sudo_location:/usr/bin/sudo",
+      "rsp": "/tmp/GISTSTDB.rsp",
+      "sourcesyswallet": "/home/zdmuser/migration/19cwallet_nonprod",
+      "ignore": ["PATCH_CHECK"],
+      "pauseafter": "ZDM_CONFIGURE_DG_SRC"
          }'
 ```
 
