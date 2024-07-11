@@ -1,4 +1,4 @@
-# ZEUS (ZDM Enterprise URL Service)
+# ZEUS (ZDM Enqueue URL Services)
 
 An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with FastAPI
 
