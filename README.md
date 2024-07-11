@@ -72,7 +72,8 @@ curl -X POST "http://127.0.0.1:8000/eval" \
            "tgtarg2": "identity_file:/home/zdmuser/.ssh/id_rsa",
            "tgtarg3": "sudo_location:/usr/bin/sudo",
            "rsp": "/home/zdmuser/migration/MOBUAT/MOBUAT.rsp",
-           "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2"
+           "sourcesyswallet": "/home/zdmuser/migration/sysWallet_11g_v2",
+           "ignore": "PATCH_CHECK"
          }'
 ```
 ## 2. Get Job Status 
