@@ -1,0 +1,64 @@
+# Use the previously built Linux build image as the base
+FROM zdm-linux:latest
+
+# Install necessary packages as root
+USER root
+RUN yum -y install libaio oraclelinux-developer-release-el8 libnsl ncurses-compat-libs expect glibc-devel hostname numactl openssl python3 sudo && \
+    yum clean all
+
+# Grant zdmuser passwordless sudo
+RUN echo "zdmuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+
+# Environment variables
+ENV HOSTNAME="zdm" \
+    HOME_DIR="/home/zdmuser" \
+    ZDM_HOME="/u01/app/zdmhome" \
+    ZDM_BASE="/u01/app/zdmbase" \
+    DOWNLOADED_FILE_PATH="/tmp/zdm.zip" \
+    PATH="${HOME_DIR}:${PATH}:/u01/app/zdmhome/bin"
+
+# Create a group and user for ZDM
+RUN groupadd -g 1000 zdm && \
+    useradd -u 1000 -m -d $HOME_DIR -g zdm zdmuser
+
+# Create directories with appropriate ownership
+RUN mkdir -p $ZDM_HOME $ZDM_BASE $HOME_DIR/bin && \
+    chown -R zdmuser:zdm $HOME_DIR $ZDM_HOME $ZDM_BASE
+
+# Copy the SSH private key into the container
+
+COPY --chown=zdmuser:zdm  .ssh $HOME_DIR/.ssh
+RUN chmod 600 $HOME_DIR/.ssh/id_rsa
+
+# Copy the OCI configuration file and the private key
+COPY --chown=zdmuser:zdm .oci $HOME_DIR/.oci
+RUN chmod 600 $HOME_DIR/.oci/oci_api_key.pem
+
+# COPY the microservice files into the container
+COPY --chown=zdmuser:zdm zdm-microservices $HOME_DIR/zdm-microservices
+
+# Install Python packages from requirements.txt
+RUN pip3 install -r $HOME_DIR/zdm-microservices/requirements.txt
+RUN pip3 install --upgrade typing_extensions
+
+# Switch to zdmuser
+USER zdmuser
+WORKDIR $HOME_DIR
+
+
+# Download the file from OCI Artifact Registry
+RUN oci artifacts generic artifact download --artifact-id ocid1.genericartifact.oc1.ap-hyderabad-1.0.amaaaaaap77apcqafulafx3f5xtcioiyjlt5yfle6gco4swatu3oc74gwwea --file zdm.zip
+
+# Unzip the downloaded file as zdmuser
+RUN unzip zdm.zip -d $HOME_DIR/unzipped
+
+# Copy the zeus.sh script into the container as zdmuser
+COPY --chown=zdmuser:zdm zeus.sh $HOME_DIR/zeus.sh
+
+# Make the script executable
+RUN chmod +x $HOME_DIR/zeus.sh
+
+# Set the entrypoint to run the zeus.sh script
+#CMD ["${HOME_DIR}/zeus.sh"]
+CMD ["/home/zdmuser/zeus.sh"]
