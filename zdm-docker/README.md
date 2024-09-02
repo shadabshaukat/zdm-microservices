@@ -60,15 +60,7 @@ Verify the image creation:
 podman images
 ```
 
-### 4. Create a Volume for ZDM Data
-
-Create a Podman volume to store ZDM data:
-
-```bash
-podman volume create zdm_volume
-```
-
-### 5. Build the ZEUS Image
+### 4. Build the ZEUS Image
 
 Build the ZEUS Docker image, which downloads the ZDM binary from the OCI Registry:
 
@@ -76,12 +68,47 @@ Build the ZEUS Docker image, which downloads the ZDM binary from the OCI Registr
 podman build --no-cache -t zeus:latest -f Dockerfile.zdm .
 ```
 
-### 6. Run the ZEUS Container
+### 5. Create a Volume for ZDM Data
 
-Run the ZEUS container to install the ZDM software and start the ZEUS microservice, mount the local directory `zdm-microservices` to the ZEUS container.
+Create a Podman volume to store ZDM data:
 
 ```bash
-podman run --userns=keep-id --network host -it --hostname zdm   -v /home/opc/zdm-microservices:/home/zdmuser/zdm-microservices:Z   -v zdm_volume:/u01:Z zeus
+podman volume create zdm_volume
+```
+
+### 6. Run the ZEUS Container
+
+Run the ZEUS container to install the ZDM software and start the ZEUS microservice, mount zdm data volume to the ZEUS container.
+
+```bash
+--start the container
+[opc@tools2 zdm-docker]$ podman run --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z zeus
+cc2ac39301e294ffd742c98149b5186de8474064dba1abbab9c874faba26828a
+
+[opc@tools2 zdm-docker]$ podman ps -a
+CONTAINER ID  IMAGE                  COMMAND               CREATED        STATUS        PORTS       NAMES
+cc2ac39301e2  localhost/zeus:latest  /home/zdmuser/zeu...  4 minutes ago  Up 2 minutes              charming_ritchie
+
+[opc@tools2 zdm-docker]$ podman exec -it cc2ac39301e2 /bin/bash
+[zdmuser@zdm ~]$ zdmservice status
+
+---------------------------------------
+	Service Status
+---------------------------------------
+
+ Running: 	false
+ Tranferport:
+ Conn String: 	jdbc:mysql://localhost:8899/
+ RMI port: 	8897
+ HTTP port: 	8898
+ Wallet path: 	/u01/app/zdmbase/crsdata/zdm/security
+
+[zdmuser@zdm ~]$ tail -f microservice.log
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+
 ```
 
 ### 7. Set Up OCI Port Forwarding (If Required)

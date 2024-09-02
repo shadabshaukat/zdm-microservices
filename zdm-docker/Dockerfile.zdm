@@ -1,7 +1,10 @@
 # Use the previously built Linux build image as the base
 FROM zdm-linux:latest
 
+# Install necessary packages as root
 USER root
+RUN yum -y install libaio oraclelinux-developer-release-el8 libnsl ncurses-compat-libs expect glibc-devel hostname numactl openssl python3 sudo && \
+    yum clean all
 
 # Grant zdmuser passwordless sudo
 RUN echo "zdmuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
@@ -32,6 +35,13 @@ RUN chmod 600 $HOME_DIR/.ssh/id_rsa
 COPY --chown=zdmuser:zdm .oci $HOME_DIR/.oci
 RUN chmod 600 $HOME_DIR/.oci/oci_api_key.pem
 
+# COPY the microservice files into the container
+COPY --chown=zdmuser:zdm zdm-microservices $HOME_DIR/zdm-microservices
+
+# Install Python packages from requirements.txt
+RUN pip3 install -r $HOME_DIR/zdm-microservices/requirements.txt
+RUN pip3 install --upgrade typing_extensions
+
 # Switch to zdmuser
 USER zdmuser
 WORKDIR $HOME_DIR
@@ -50,5 +60,5 @@ COPY --chown=zdmuser:zdm zeus.sh $HOME_DIR/zeus.sh
 RUN chmod +x $HOME_DIR/zeus.sh
 
 # Set the entrypoint to run the zeus.sh script
+#CMD ["${HOME_DIR}/zeus.sh"]
 CMD ["/home/zdmuser/zeus.sh"]
-
