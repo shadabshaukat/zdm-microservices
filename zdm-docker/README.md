@@ -24,12 +24,15 @@ git@github.com:shadabshaukat/zdm-microservices.git
 
 ```bash
 git@github.com:shadabshaukat/zdm-docker.git
+
+mv zdm-microservices zdm-docker/
+
 cd zdm-docker
 ```
 
 ### 2. Create Configuration Directories
 
-Create two directories, `.oci` and `.ssh`, in the repository directory:
+Create two directories, `.oci` and `.ssh`, in the repository directory of zdm_docker:
 
 - **.oci**: Contains the OCI configuration file and API key for downloading the ZDM software from the OCI Registry artifact.
 - **.ssh**: Contains SSH keys to access the source and target database hosts for ZDM migration.
