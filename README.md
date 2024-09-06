@@ -13,6 +13,7 @@ An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with 
 │   └── zeus.sh
 ├── .oci/                   # OCI configuration files, including API keys
 ├── .env                    # Environment variables for ZDM setup
+├── .hosts                  # hosts entry for ZDM Migration job
 ├── Dockerfile              # Dockerfile to build the ZDM environment
 ├── build.sh                # Script to automate the ZDM image build process
 └── run.sh                  # Script to automate the creation of the ZDM container
@@ -87,7 +88,20 @@ cp /path/to/oci_api_key.pem .oci/
    ```
 
 ## Running The Container
-1. **Run the Container**
+
+1. **DB Hosts Naming Resolution Configuration** (Optional)
+   It is required only if  DNS server naming resolution is not available. `hosts` file has to be used for DNS name resolution of source and target DB server name and SCAN name. 
+
+   ```bash
+   # .hosts file
+   192.168.1.3 abc.domain abc
+   192.168.1.4 efg.domain efg
+   192.168.1.10 abc-scan.domain abc-scan
+   192.168.1.10 efg-scan.domain efg-scan
+
+   ```
+
+2. **Run the Container**
    Once the image is built, use the `run.sh` script to start the container. This script runs the container with the correct configuration, mounts, and environment variables.
    ```bash
    ./run.sh
@@ -101,7 +115,7 @@ cp /path/to/oci_api_key.pem .oci/
 
    The container will start in the background. 
 
-2. **Stop and Remove the Container:**
+3. **Stop and Remove the Container:**
 
    You can stop and remove the container with a single command:
 
