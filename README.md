@@ -2,6 +2,22 @@
 
 An API driven Control plane for Oracle Zero Downtime Migration Tool. Built with FastAPI
 
+## Project Structure
+
+```
+.
+├── zdm-microservices/      # Directory containing ZDM microservice code and configs
+│   ├── main.py
+│   ├── requirements.txt
+│   ├── zdm.env
+│   └── zeus.sh
+├── .oci/                   # OCI configuration files, including API keys
+├── .env                    # Environment variables for ZDM setup
+├── Dockerfile              # Dockerfile to build the ZDM environment
+├── build.sh                # Script to automate the ZDM image build process
+└── run.sh                  # Script to automate the creation of the ZDM container
+
+```
 
 # ZEUS Docker Image for ZDM Microservice
 
@@ -9,119 +25,94 @@ This repository provides Dockerfiles and instructions for building and running a
 
 ## Prerequisites
 
-- **Oracle Cloud Infrastructure (OCI) Registry**: Ensure the latest ZDM software is uploaded as an artifact.
-- **ZDM Host**: A server with Podman installed, It's an instance running on OCI.
+- **ZDM Host** A server with Podman installed, It's an instance running on OCI.
+- **Oracle Cloud Infrastructure (OCI) Registry**  Ensure the latest ZDM software is uploaded as an artifact. Make note of the OCID of the artifact.
+- **OCI User** Following the principle of least privilege, create a dedicated OCI user with read-only access to the specified artifact in the OCI Artifact Registry repository.
 
-## Getting Started
-
+## Build Process
 Follow these steps to build and run the ZEUS Docker image.
 
-### 1. Clone the Repository
+1. **Clone the Repository**
+   Clone the repository to your local machine:
+   ```bash
+   git clone <repo-url>
+   cd zdm-docker
+   ```
 
-* Clone the ZDM microservice repository to your ZDM host:
+2. **Set Up Environment Variables**
+   Ensure that the `.env` file is set up with the required environment variables for the build. Example:
 
-```
-git@github.com:shadabshaukat/zdm-microservices.git
-```
+   ```bash
+   # .env file
+   
+   # Environment variables
+   ZDM_USER="zdmuser"
+   ZDM_GROUP="zdm"
+   HOME_DIR="/u01/zdmuser"
+   ARTIFACT_ID="ocid1.genericartifact.oc1.ap-hyderabad-1.0.amaaaaaap77apcqaxu2byf5uwr5wccba3l4u4emx3wurknaipanzd5amvajq"
+   HOSTNAME="zdm"
+   ZDM_HOME="/u01/app/zdmhome"
+   ZDM_BASE="/u01/app/zdmbase"
+   ZEUS_LOG="/u01/log"
+   ```
 
-* Clone this Docker Image repository to your ZDM host:
+3. **Create Configuration Directories**
+Create directory `.oci` in the repository directory. It contains the OCI configuration file and API key for downloading the ZDM software from the OCI Registry artifact.
 
 ```bash
-git@github.com:shadabshaukat/zdm-docker.git
-
-mv zdm-microservices zdm-docker/
-
-cd zdm-docker
-```
-
-### 2. Create Configuration Directories
-
-Create two directories, `.oci` and `.ssh`, in the repository directory of zdm_docker:
-
-- **.oci**: Contains the OCI configuration file and API key for downloading the ZDM software from the OCI Registry artifact.
-- **.ssh**: Contains SSH keys to access the source and target database hosts for ZDM migration.
-
-```bash
-mkdir .oci .ssh
+mkdir .oci 
 
 # Example: Copy your OCI config and API key
 cp /path/to/oci/config .oci/
 cp /path/to/oci_api_key.pem .oci/
 
-# Example: Copy your SSH keys
-cp /path/to/id_rsa .ssh/
-cp /path/to/id_rsa.pub .ssh/
 ```
 
-### 3. Build the Oracle Linux Base Image
+4. **Build the ZEUS Image and Create Docker Volume**
+   Run the build script to create the container image. This will download required ZDM artifacts, set up the environment, and install dependencies. It will also create a Docker Volume after the image is built:
 
-Build the Oracle Linux base image using the provided `Dockerfile.base`:
+   ```bash
+   ./build.sh
+   ```
 
-```bash
-podman build --no-cache -t zdm-linux:latest -f Dockerfile.base .
-```
+   Alternatively, you can directly run commands seperately as below
 
-Verify the image creation:
+   ```bash
+   podman build --build-arg ZDM_USER=$ZDM_USER --build-arg ZDM_GROUP=$ZDM_GROUP --build-arg HOME_DIR=$HOME_DIR --build-arg ARTIFACT_ID=$ARTIFACT_ID --build-arg HOSTNAME=$HOSTNAME --build-arg ZDM_HOME=$ZDM_HOME --build-arg ZDM_BASE=$ZDM_BASE --build-arg ZEUS_LOG=$ZEUS_LOG -t zeus:latest .
+   ```
 
-```bash
-podman images
-```
+   ```bash
+   podman volume create zdm_volume
+   ```
 
-### 4. Build the ZEUS Image
+## Running The Container
+1. **Run the Container**
+   Once the image is built, use the `run.sh` script to start the container. This script runs the container with the correct configuration, mounts, and environment variables.
+   ```bash
+   ./run.sh
+   ```
 
-Build the ZEUS Docker image, which downloads the ZDM binary from the OCI Registry:
+   Alternatively, you can directly run:
 
-```bash
-podman build --no-cache -t zeus:latest -f Dockerfile.zdm .
-```
+   ```bash
+   podman run --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z --name zeus zeus
+   ```
 
-### 5. Create a Volume for ZDM Data
+   The container will start in the background. 
 
-Create a Podman volume to store ZDM data:
+2. **Stop and Remove the Container:**
 
-```bash
-podman volume create zdm_volume
-```
+   You can stop and remove the container with a single command:
 
-### 6. Run the ZEUS Container
+   ```bash
+   podman rm -f zeus
+   ```
 
-Run the ZEUS container to install the ZDM software and start the ZEUS microservice, mount zdm data volume to the ZEUS container.
+## Enable OCI Port Forwarding (Optional)
 
-```bash
---start the container
-[opc@tools2 zdm-docker]$ podman run --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z zeus
-cc2ac39301e294ffd742c98149b5186de8474064dba1abbab9c874faba26828a
+If ZDM host is in a private subnet and the host accessing the ZEUS application does not have direct access to the ZDM host, establish an OCI port forwarding bastion session on port 8000 to the ZDM host:
 
-[opc@tools2 zdm-docker]$ podman ps -a
-CONTAINER ID  IMAGE                  COMMAND               CREATED        STATUS        PORTS       NAMES
-cc2ac39301e2  localhost/zeus:latest  /home/zdmuser/zeu...  4 minutes ago  Up 2 minutes              charming_ritchie
-
-[opc@tools2 zdm-docker]$ podman exec -it cc2ac39301e2 /bin/bash
-[zdmuser@zdm ~]$ zdmservice status
-
----------------------------------------
-	Service Status
----------------------------------------
-
- Running: 	false
- Tranferport:
- Conn String: 	jdbc:mysql://localhost:8899/
- RMI port: 	8897
- HTTP port: 	8898
- Wallet path: 	/u01/app/zdmbase/crsdata/zdm/security
-
-[zdmuser@zdm ~]$ tail -f microservice.log
-INFO:     Started server process [1]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-
-```
-
-### 7. Set Up OCI Port Forwarding (If Required)
-
-If ZDM host is in a private subnet and the host accessing the ZEUS application does not have direct access to the ZDM host, set up an OCI port forwarding session on port 8000 to the ZDM host:
-
+Example:
 ```bash
 ssh -i /path/to/ssh/key -N -L 8000:{ZDM_HOST_IP}:8000 -p 8000 {OCID_of_ZDM_HOST}@host.bastion.{OCI_REGION}.oci.oraclecloud.com
 ```
@@ -136,10 +127,89 @@ http://127.0.0.1:8000/docs
 
 This URL provides access to the API documentation and the ZEUS application interface.
 
-## Contributing
+## Logs and Debugging
 
-Contributions are welcome! Please feel free to submit a pull request or open an issue.
+Logs are stored in the `/u01/log` directory, which can be accessed within the container.
 
+### Logs Directory
+
+```bash
+[zdmuser@zdm log]$ ls -al
+total 16
+drwxr-xr-x. 2 zdmuser zdm    96 Sep  5 10:59 .
+drwxr-xr-x. 4 root    root   28 Sep  5 10:19 ..
+-rw-r--r--. 1 zdmuser zdm     0 Sep  5 10:36 .zdm_installed
+-rw-r--r--. 1 zdmuser zdm  3295 Sep  5 12:25 debug.log
+-rw-r--r--. 1 zdmuser zdm   193 Sep  5 12:25 microservice.log
+-rw-r--r--. 1 zdmuser zdm  4398 Sep  5 12:04 zdm_install_log.txt
+```
+
+- **debug.log**: Contains logs related to starting services.
+- **microservice.log**: Contains logs related to the ZEUS microservice.
+- **zdm_install_log.txt**: Logs generated during the installation of ZDM.
+
+### Example Logs:
+
+```bash
+# Debug log
+2024-09-05 12:16:30 - Starting ZDM service...
+2024-09-05 12:16:30 - ZDM service started.
+2024-09-05 12:16:30 - Starting ZEUS microservice...
+2024-09-05 12:16:30 - zeus.sh script finished.
+```
+
+```bash
+# Microservice log
+INFO:     Started server process [14]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+```
+
+```bash
+# ZDM installation log
+ZDM kit home: /home/zdmuser/unzipped/zdm21.4.9
+/home/zdmuser/unzipped/zdm21.4.9
+---------------------------------------
+Validating zip file...
+---------------------------------------
+       25  08-30-2024 18:38   rhp/zdm.build
+---------------------------------------
+Unzipping shiphome to home...
+---------------------------------------
+/u01/app/zdmhome is not empty...
+```
+
+## ZEUS Script Overview
+
+The `zeus.sh` script is responsible for:
+- Installing ZDM (if not already installed).
+- Starting the ZDM service.
+- Starting the ZEUS microservice.
+
+### Health Check
+
+A health check has been added to ensure the `zeus.sh` script completes successfully. 
+
+You can check STATUS of the podman container using below command:
+
+```
+[opc@tools2 zdm-docker-v3]$ podman ps -a
+CONTAINER ID  IMAGE                  COMMAND               CREATED         STATUS                   PORTS       NAMES
+7cecddeb2424  localhost/zeus:latest  /bin/bash -c /hom...  15 minutes ago  Up 13 minutes (healthy)              zeus
+```
+
+The health check looks for a file `.zeus_finished` in the `$ZEUS_LOG` directory.
+
+```bash
+HEALTHCHECK --interval=10s --timeout=5s --start-period=600s --retries=3 CMD test -f $ZEUS_LOG/.zeus_finished || exit 1
+```
+
+## Conclusion
+
+This setup provides a complete environment for running ZEUS microservices and ZDM tools inside a containerized environment using Oracle Linux. Logs can be accessed to track the installation and service processes.
+
+For troubleshooting, check the log files inside `/u01/log`.
 
 #######################################################################################
 
