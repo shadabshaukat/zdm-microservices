@@ -38,9 +38,6 @@ Follow these steps to build and run the ZEUS Docker image.
    mkdir zeus
    cd zeus
    git clone <repo-url> .
-   chmod 744 build.sh
-   chmod 744 run.sh
-   chmod 744 zdm-microservices/zeus.sh
    ```
 
 2. **Set Up Environment Variables**
