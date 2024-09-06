@@ -22,6 +22,7 @@ ARG HOSTNAME
 ARG ZDM_HOME
 ARG ZDM_BASE
 ARG ZEUS_LOG
+ARG ZEUS_DATA
 ARG PATH
 
 # Set ARGs as ENV variables to make them available in the container environment
@@ -29,6 +30,7 @@ ENV HOME_DIR=$HOME_DIR \
     ZDM_HOME=$ZDM_HOME \
     ZDM_BASE=$ZDM_BASE \
     ZEUS_LOG=$ZEUS_LOG \
+    ZEUS_DATA=$ZEUS_DATA \
     PATH=$PATH
 
 # Install additional packages for ZDM
@@ -37,7 +39,7 @@ RUN yum -y install libaio libnsl ncurses-compat-libs expect glibc-devel hostname
     yum clean all
 
 # Create directories
-RUN mkdir -p $ZDM_HOME $ZDM_BASE $ZEUS_LOG && \
+RUN mkdir -p $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA && \
     ls -la /u01
 
 # Create a group and user for ZDM
@@ -45,12 +47,13 @@ RUN groupadd -g 1000 $ZDM_GROUP && \
     useradd -u 1000 -m -d $HOME_DIR -g $ZDM_GROUP $ZDM_USER
 
 # Change with appropriate ownership
-RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR $ZDM_HOME $ZDM_BASE $ZEUS_LOG
+RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA
 
 # Create the SSH directory and generate SSH key without prompt
 RUN mkdir -p $HOME_DIR/.ssh && \
     ssh-keygen -m PEM -t rsa -b 4096 -N '' -f $HOME_DIR/.ssh/id_rsa && \
-    chmod 600 $HOME_DIR/.ssh/id_rsa $HOME_DIR/.ssh/id_rsa.pub
+    chmod 600 $HOME_DIR/.ssh/id_rsa $HOME_DIR/.ssh/id_rsa.pub && \
+    chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/.ssh
 
 COPY --chown=$ZDM_USER:$ZDM_GROUP .oci $HOME_DIR/.oci
 
