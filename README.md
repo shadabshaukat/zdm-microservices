@@ -35,8 +35,9 @@ Follow these steps to build and run the ZEUS Docker image.
 1. **Clone the Repository**
    Clone the repository to your local machine:
    ```bash
-   git clone <repo-url>
-   cd zdm-docker
+   mkdir zeus
+   cd zeus
+   git clone <repo-url> .
    ```
 
 2. **Set Up Environment Variables**
