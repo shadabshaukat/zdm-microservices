@@ -504,7 +504,7 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
     password = params.password
     create_credential_script = [
         "#!/bin/bash",
-        f"$ZDM_HOME/bin/mkstore -wrl {wallet_path} -createCredential store {user} {password}"
+        f"$ZDM_HOME/bin/mkstore -wrl {wallet_path} -createCredential store {user} '{password}'"
     ]
 
     # Join the script lines into a single command
