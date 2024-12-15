@@ -69,6 +69,19 @@ cp /path/to/oci/config .oci/
 cp /path/to/oci_api_key.pem .oci/
 
 ```
+Make sure key_file location points to /home/zdmuser which is the destination path inside the container.
+```
+[opc@tools zeus]$ cd .oci
+[opc@tools .oci]$ ls
+config  oci_api_key.pem
+[opc@tools .oci]$ vi config
+[DEFAULT]
+user=***
+fingerprint=***
+tenancy=***
+region=***
+key_file=/home/zdmuser/.oci/oci_api_key.pem
+```
 
 4. **Build the ZEUS Image and Create Docker Volume**
    Run the build script to create the container image. This will download required ZDM artifacts, set up the environment, and install dependencies. It will also create a Docker Volume after the image is built:
