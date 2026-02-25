@@ -33,5 +33,15 @@ log_with_timestamp "ZDM service started."
 # Start ZEUS microservice
 log_with_timestamp "Starting ZEUS microservice..."
 exec python3 $HOME_DIR/zdm-microservices/main.py > $ZEUS_LOG/microservice.log 2>&1 &
+
+# Start Streamlit UI
+log_with_timestamp "Starting Streamlit UI..."
+nohup python3 -m streamlit run "$HOME_DIR/zdm-microservices/streamlit_app.py" \
+  --server.address 0.0.0.0 \
+  --server.port "${STREAMLIT_PORT:-8000}" \
+  --server.headless true \
+  >> "$ZEUS_LOG/streamlit.log" 2>&1 < /dev/null &
+echo $! > "$ZEUS_LOG/streamlit.pid"
+
 touch $ZEUS_LOG/.zeus_finished
 log_with_timestamp "zeus.sh script finished."

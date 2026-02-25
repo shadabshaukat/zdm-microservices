@@ -2,3 +2,6 @@ fastapi
 uvicorn
 pydantic
 passlib
+streamlit
+oracledb
+python-multipart

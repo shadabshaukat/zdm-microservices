@@ -13,7 +13,8 @@ while IFS=' ' read -r ip fqdn hostname; do
 done < "$HOSTS_FILE"
 
 # Build the final podman run command
-CMD="podman run --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z $ADD_HOST_FLAGS --name zeus zeus"
+#CMD="podman run --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z $ADD_HOST_FLAGS --name zeus zeus"
+CMD="podman run --restart=always --userns=keep-id --network host -d --hostname zdm -v zdm_volume:/u01:Z $ADD_HOST_FLAGS --name zeus zeus"
 
 # Print the command to be executed
 echo "Executing command: $CMD"

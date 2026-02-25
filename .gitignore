@@ -1,2 +1,35 @@
+# OCI / host / local kit
 .oci/
 .hosts
+.local_zdm/
+zdm.zip
+
+# Local envs / secrets
+.zeus_env/
+.env
+*.env
+!.env.example
+zdm-microservices/.zeus.auth.env
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Logs / runtime
+*.log
+*.pid
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
