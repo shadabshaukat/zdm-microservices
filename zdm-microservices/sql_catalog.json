@@ -1,0 +1,43 @@
+{
+  "base": {
+    "basic_connectivity_check": "SELECT 1 FROM dual",
+    "db_info": "SELECT name, db_unique_name, dbid, platform_name, cdb FROM v$database",
+    "instance_info": "SELECT host_name, version_full FROM v$instance",
+    "container_name": "SELECT sys_context('userenv','con_name') AS container_name FROM dual",
+    "directory_list": "SELECT directory_name, directory_path FROM dba_directories ORDER BY directory_name",
+    "non_maintained_users": "SELECT username FROM dba_users WHERE oracle_maintained = 'N' AND account_status LIKE 'OPEN%' AND common = 'NO' ORDER BY username",
+    "schemas_all": "SELECT username, oracle_maintained FROM dba_users WHERE account_status LIKE 'OPEN%' ORDER BY username",
+    "non_temp_tablespaces": "SELECT tablespace_name FROM dba_tablespaces WHERE contents = 'PERMANENT' AND tablespace_name NOT IN ('SYSTEM','SYSAUX','TEMP') ORDER BY tablespace_name",
+    "nls_info": "SELECT parameter, value FROM nls_database_parameters WHERE parameter IN ('NLS_CHARACTERSET','NLS_NCHAR_CHARACTERSET')",
+    "timezone_version": "SELECT version FROM v$timezone_file",
+    "db_role_open_mode_base": "SELECT database_role, open_mode, protection_mode, protection_level, switchover_status FROM v$database",
+    "rac_info": "SELECT CASE WHEN COUNT(*) > 1 THEN 'YES' ELSE 'NO' END AS rac, COUNT(*) AS instance_count FROM gv$instance",
+    "cloud_identity": "SELECT cloud_identity FROM v$pdbs",
+    "exadata_cells": "SELECT cell_type, cell_path FROM v$cell",
+    "version_banners": "SELECT banner_full FROM v$version ORDER BY banner_full",
+    "container_context": "SELECT sys_context('userenv','con_name') AS con_name, sys_context('userenv','con_id') AS con_id, sys_context('userenv','cdb_name') AS cdb_name FROM dual",
+    "current_container_details": "SELECT con_id, name, open_mode, restricted, open_time FROM v$containers WHERE con_id = sys_context('userenv','con_id')"
+  },
+  "logical_offline_extra": {
+    "streams_pool_size": "SELECT value AS streams_pool_size_bytes FROM v$parameter WHERE name = 'streams_pool_size'"
+  },
+  "physical_common": {
+    "archivelog_force_logging": "SELECT log_mode, force_logging, flashback_on FROM v$database",
+    "db_edition_banner": "SELECT banner_full FROM v$version WHERE banner_full LIKE 'Oracle Database%'",
+    "spfile_in_use": "SELECT value AS spfile FROM v$parameter WHERE name = 'spfile'",
+    "compatible_param": "SELECT value AS compatible FROM v$parameter WHERE name = 'compatible'",
+    "db_block_size": "SELECT value AS db_block_size FROM v$parameter WHERE name = 'db_block_size'",
+    "db_nk_cache_sizes": "SELECT name, value FROM v$parameter WHERE name LIKE 'db\\_%k\\_cache\\_size' ESCAPE '\\\\' ORDER BY name",
+    "tde_wallet_status": "SELECT wallet_type, status, wallet_order, fully_backed_up FROM v$encryption_wallet"
+  },
+  "physical_online_extra": {
+    "db_role_open_mode": "SELECT database_role, open_mode, protection_mode, protection_level, switchover_status FROM v$database",
+    "redo_logs": "SELECT thread#, group#, bytes, status, archived FROM v$log ORDER BY thread#, group#",
+    "standby_redo_logs": "SELECT thread#, group#, bytes, status FROM v$standby_log ORDER BY thread#, group#",
+    "dg_params": "SELECT name, value FROM v$parameter WHERE name IN ('db_unique_name','log_archive_config','fal_server','fal_client') OR name LIKE 'log_archive_dest_%' ORDER BY name"
+  },
+  "hybrid_offline_extra": {
+    "permanent_tablespaces_details": "SELECT tablespace_name, bigfile, contents, block_size, encrypted FROM dba_tablespaces WHERE contents='PERMANENT' ORDER BY tablespace_name",
+    "sqlpatch_35564253": "SELECT patch_id, action, status, description, action_time FROM dba_registry_sqlpatch WHERE patch_id = 35564253 ORDER BY action_time"
+  }
+}

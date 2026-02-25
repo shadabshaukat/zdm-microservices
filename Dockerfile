@@ -1,23 +1,18 @@
 ################################# Stage 1: Base environment setup ######################################
 FROM oraclelinux:8 AS base
 
-# Install necessary packages for OCI CLI
 RUN yum -y install unzip oraclelinux-developer-release-el8 && \
-    yum -y install python36-oci-cli && \
-    yum -y install openssh-clients && \
+    yum -y install openssh-clients python36-oci-cli && \
     yum clean all
 
-# Set a default working directory
 WORKDIR /tmp
 
-################################# Stage 2: ZDM environment setup and file download ######################################
+################################# Stage 2: ZDM environment setup and local kit ######################################
 FROM base AS zdm-setup
 
-# Declare the build arguments
 ARG ZDM_USER
 ARG ZDM_GROUP
 ARG HOME_DIR
-ARG ARTIFACT_ID
 ARG HOSTNAME
 ARG ZDM_HOME
 ARG ZDM_BASE
@@ -25,7 +20,6 @@ ARG ZEUS_LOG
 ARG ZEUS_DATA
 ARG PATH
 
-# Set ARGs as ENV variables to make them available in the container environment
 ENV HOME_DIR=$HOME_DIR \
     ZDM_HOME=$ZDM_HOME \
     ZDM_BASE=$ZDM_BASE \
@@ -33,42 +27,33 @@ ENV HOME_DIR=$HOME_DIR \
     ZEUS_DATA=$ZEUS_DATA \
     PATH=$PATH
 
-# Install additional packages for ZDM
 USER root
-RUN yum -y install libaio libnsl ncurses-compat-libs expect glibc-devel hostname numactl openssl python3 sudo openssh-clients && \
+RUN yum -y install libaio libnsl ncurses-compat-libs expect glibc-devel hostname numactl openssl python3 sudo openssh-clients xz xz-libs lsof && \
     yum clean all
 
-# Create directories
 RUN mkdir -p $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA && \
     ls -la /u01
 
-# Create a group and user for ZDM
 RUN groupadd -g 1000 $ZDM_GROUP && \
     useradd -u 1000 -m -d $HOME_DIR -g $ZDM_GROUP $ZDM_USER
 
-# Change with appropriate ownership
 RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA
 
-# Create the SSH directory and generate SSH key without prompt
 RUN mkdir -p $HOME_DIR/.ssh && \
     ssh-keygen -m PEM -t rsa -b 4096 -N '' -f $HOME_DIR/.ssh/id_rsa && \
     chmod 600 $HOME_DIR/.ssh/id_rsa $HOME_DIR/.ssh/id_rsa.pub && \
     chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/.ssh
 
-COPY --chown=$ZDM_USER:$ZDM_GROUP .oci $HOME_DIR/.oci
+COPY --chown=$ZDM_USER:$ZDM_GROUP .local_zdm /tmp/local_zdm
 
-# Switch to $ZDM_USER
 USER $ZDM_USER
 WORKDIR $HOME_DIR
 
-# Change permission of OCI config file
-RUN oci setup repair-file-permissions --file $HOME_DIR/.oci/config
+# Require local kit only
+RUN if [ ! -f /tmp/local_zdm/zdm.zip ]; then echo 'Local kit not found at /tmp/local_zdm/zdm.zip'; exit 1; fi; \
+    cp /tmp/local_zdm/zdm.zip $HOME_DIR/zdm.zip
 
-# Download the file from OCI Artifact Registry
-RUN oci artifacts generic artifact download --artifact-id ${ARTIFACT_ID} --file zdm.zip
-
-# Unzip the downloaded file
-RUN unzip zdm.zip -d $HOME_DIR/unzipped
+RUN unzip $HOME_DIR/zdm.zip -d $HOME_DIR/unzipped
 
 ################################## Stage 3: Final ZDM environment ######################################
 FROM zdm-setup AS final
@@ -83,7 +68,9 @@ USER root
 COPY zdm-microservices $HOME_DIR/zdm-microservices
 
 # Change ownership of the directory and its files
-RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices
+#RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices
+RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices && \
+    chmod +x $HOME_DIR/zdm-microservices/zeus.sh
 
 # Switch to $ZDM_USER before running pip3 install
 USER $ZDM_USER
