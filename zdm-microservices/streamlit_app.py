@@ -14,6 +14,23 @@ except ImportError:
     from backend_auth import first_user_defaults  # script-style
 
 
+# Wrapper to avoid Arrow type errors from mixed object columns.
+def st_df_safe(df: pd.DataFrame, **kwargs):
+    # Coerce to DataFrame if caller passed list/dict/etc.
+    if not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(df)
+    try:
+        return st.dataframe(df, **kwargs)
+    except Exception:
+        df2 = df.copy()
+        for col in df2.columns:
+            if df2[col].dtype == object:
+                df2[col] = df2[col].apply(
+                    lambda v: v.decode() if isinstance(v, (bytes, bytearray)) else v
+                ).astype(str)
+        return st.dataframe(df2, **kwargs)
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -128,30 +145,27 @@ def generate_rsp_lines(preview_payload: Dict[str, Any]) -> List[str]:
     return out
 
 
-def load_local_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
 def get_projects_list(api_base: str, auth: HTTPBasicAuth) -> Dict[str, Any]:
     proj = api_request("get", "/projects", api_base, auth, quiet=True) or {}
-    if isinstance(proj, dict) and proj:
-        return proj
-    local = load_local_json(Path(__file__).resolve().parent / "projects.json")
-    return local if isinstance(local, dict) else {}
+    return proj if isinstance(proj, dict) else {}
 
 
-def ping_backend(api_base: str, auth: HTTPBasicAuth) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+def ping_backend(api_base: str, auth: HTTPBasicAuth) -> Tuple[bool, str, Optional[Dict[str, Any]], Optional[str]]:
+    """Try health/version endpoints and return success plus last error detail."""
+    last_error: Optional[str] = None
     for ep in ["/health", "/version"]:
-        data = api_request("get", ep, api_base, auth, quiet=True, timeout=8)
-        if data is not None:
-            return True, ep, data
-    return False, "", None
+        url = f"{api_base}{ep}"
+        try:
+            resp = requests.get(url, auth=auth, timeout=8)
+            resp.raise_for_status()
+            try:
+                return True, ep, resp.json(), None
+            except ValueError:
+                return True, ep, {"raw": resp.text}, None
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            continue
+    return False, "", None, last_error
 
 
 def is_blank(v: Any) -> bool:
@@ -213,7 +227,8 @@ st.caption("A lightweight UI on top of ZDM CLI via your FastAPI microservice.")
 # -----------------------------
 # Defaults / session state
 # -----------------------------
-default_base = os.getenv("API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
+# Use hostname matching the certificate CN (localhost) to avoid TLS hostname errors.
+default_base = os.getenv("API_BASE_URL", f"https://localhost:{os.getenv('ZEUS_PORT', '8001')}").rstrip("/")
 def _load_zeus_auth_defaults() -> Tuple[str, str]:
     """Read first user/pass from auth helper."""
     return first_user_defaults()
@@ -288,12 +303,17 @@ if section == "settings":
     with right:
         st.markdown("### Backend Status")
         if st.button("Ping backend", type="primary"):
-            ok, used, data = ping_backend(api_base, auth)
+            ok, used, data, err = ping_backend(api_base, auth)
             if ok:
                 st.success(f"Backend reachable via `{used}`")
                 st.json(data)
             else:
-                st.error("Ping failed. Please implement `/health` or `/version` on backend.")
+                st.error(
+                    "Backend unreachable. Check API_BASE_URL and TLS trust. "
+                    "If using self-signed cert, set REQUESTS_CA_BUNDLE to zeus.crt."
+                )
+                if err:
+                    st.caption(f"Ping detail: {err}")
 
 
 
@@ -426,7 +446,7 @@ elif section == "connections":
             edited = st.data_editor(
                 df_orig,
                 hide_index=True,
-                use_container_width=True,
+                width='stretch',
                 column_config={
                     "Name": st.column_config.TextColumn(disabled=True),
                     "TLS Wallet dir": st.column_config.TextColumn(disabled=True),
@@ -439,7 +459,7 @@ elif section == "connections":
 
             col_save, col_delete = st.columns([0.55, 0.45])
             with col_save:
-                if st.button("Save edits", type="primary", use_container_width=True):
+                if st.button("Save edits", type="primary", width='stretch'):
                     updated = 0
                     for idx, row in edited.iterrows():
                         orig = df_orig.iloc[idx]
@@ -464,7 +484,7 @@ elif section == "connections":
                     else:
                         st.success(f"Saved {updated} changed connection{'s' if updated != 1 else ''}.")
             with col_delete:
-                if st.button("Delete checked", type="secondary", use_container_width=True):
+                if st.button("Delete checked", type="secondary", width='stretch'):
                     to_delete = [row["Name"] for _, row in edited.iterrows() if row.get("Delete?", False)]
                     if not to_delete:
                         st.info("No connections selected for deletion.")
@@ -489,21 +509,18 @@ elif section == "connections":
             if test_name == "-- Select --":
                 st.error("Please select a connection.")
             else:
-                payload = {
-                    "name": test_name,
-                    "password": temp_password or None,
-                }
                 cinfo = conns.get(test_name, {})
-                wallet_required = cinfo.get("use_tcps") and not cinfo.get("allow_tls_without_wallet")
-                if wallet_required:
-                    if cinfo.get("tls_wallet_uploaded_dir"):
-                        payload["use_uploaded_tls_wallet"] = True
-                    else:
-                        st.error("Upload a TLS wallet for this connection before testing.")
-                        st.stop()
-                if not payload.get("use_uploaded_tls_wallet") and not payload["password"]:
+                wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get("allow_tls_without_wallet")
+                if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
+                    st.error("Upload a TLS wallet for this connection before testing.")
+                    st.stop()
+                if not temp_password:
                     st.error("Enter the DB password to test this connection.")
                     st.stop()
+                payload = {
+                    "name": test_name,
+                    "password": temp_password,
+                }
                 data = api_request("post", "/dbconnection/test", api_base, auth, payload=payload)
                 if data:
                     st.success(data.get("message", "Test succeeded"))
@@ -517,7 +534,7 @@ elif section == "projects":
     st.subheader("Projects")
     st.caption("A Project groups source & target connections; its name is also used as the response filename.")
 
-    connections_cache = load_local_json(Path(__file__).resolve().parent / "db_connections.json")
+    connections_cache = api_request("get", "/dbconnections", api_base, auth, quiet=True) or {}
     conn_names = ["-- Select connection --"] + list(connections_cache.keys())
 
     with st.form("save_project"):
@@ -729,10 +746,10 @@ elif section == "response":
         if "rf_expand_all" not in st.session_state:
             st.session_state["rf_expand_all"] = False
         with row_b1:
-            if st.button("Expand", key="rf_expand_all_btn", use_container_width=True):
+            if st.button("Expand", key="rf_expand_all_btn", width='stretch'):
                 st.session_state["rf_expand_all"] = True
         with row_b2:
-            if st.button("Collapse", key="rf_collapse_all_btn", use_container_width=True):
+            if st.button("Collapse", key="rf_collapse_all_btn", width='stretch'):
                 st.session_state["rf_expand_all"] = False
 
         expand_all = st.session_state.get("rf_expand_all", False)
@@ -1180,7 +1197,7 @@ def render_job_result(payload: Dict[str, Any]):
         rows.append({"Field": k, "Value": v})
     if rows:
         st.markdown("#### Run result")
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st_df_safe(pd.DataFrame(rows), hide_index=True, width='stretch')
     if cmd_lines:
         st.markdown("##### ZDM CLI command")
         st.code("\n".join(cmd_lines) if isinstance(cmd_lines, list) else str(cmd_lines), language="bash")
@@ -1437,7 +1454,7 @@ if section == "createjob":
         with action_col1:
             save_and_run = st.button("Save & Run", type="primary")
         with action_col2:
-            save_only = st.button("Save only", type="secondary", use_container_width=True)
+            save_only = st.button("Save only", type="secondary", width='stretch')
         run_clicked = save_and_run
 
     if save_only or save_and_run:
@@ -1523,12 +1540,12 @@ elif section == "runjob":
     saved_sel = st.selectbox("Saved job definitions", saved_job_names, key="runjob_saved_select")
     c2, c3, c4 = st.columns([0.34, 0.33, 0.33])
     with c2:
-        if st.button("View", key="runjob_view_saved_btn", use_container_width=True):
+        if st.button("View", key="runjob_view_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
                 st.session_state["runjob_view_job"] = saved_sel
                 st.rerun()
     with c3:
-        if st.button("Run", key="runjob_run_saved_btn", use_container_width=True):
+        if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
                 job = saved_jobs_resp.get(saved_sel, {})
                 if job:
@@ -1561,7 +1578,7 @@ elif section == "runjob":
                         st.success(f"Ran saved job '{saved_sel}'")
                         st.session_state["last_job_status"] = data
     with c4:
-        if st.button("Delete", key="runjob_delete_saved_btn", use_container_width=True):
+        if st.button("Delete", key="runjob_delete_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
                 resp = api_request("delete", f"/jobsaved/{saved_sel}", api_base, auth)
                 if resp:
@@ -1577,7 +1594,7 @@ elif section == "runjob":
                 for k, v in vjob.items()
             ]
         )
-        st.dataframe(df_view, hide_index=True, use_container_width=True)
+        st_df_safe(df_view, hide_index=True, width='stretch')
         # Get live command preview via dry_run
         payload_preview = {
             "project": vjob.get("project"),
@@ -1706,7 +1723,7 @@ elif section == "jobs":
             else:
                 st.caption("No recent Job IDs")
         with row[2]:
-            query_clicked = st.button("Query", type="primary", use_container_width=True)
+            query_clicked = st.button("Query", type="primary", width='stretch')
 
         if query_clicked:
             job_id_clean = (job_id or "").strip()
@@ -1791,7 +1808,7 @@ elif section == "jobs":
 
                 with st.expander("Raw output", expanded=False):
                     if out_text:
-                        st.text_area("", value=out_text, height=260, disabled=True, label_visibility="collapsed")
+                        st.text_area("Raw output", value=out_text, height=260, disabled=True, label_visibility="collapsed")
                     else:
                         st.info("No output text returned.")
 
@@ -2152,7 +2169,7 @@ elif section == "discovery":
         with tabs[0]:
             checks = normalized.get("readiness_checks") or []
             if checks:
-                st.dataframe(pd.DataFrame(checks), hide_index=True, use_container_width=True)
+                st_df_safe(pd.DataFrame(checks), hide_index=True, width='stretch')
             else:
                 st.info("No readiness checks defined for this migration type yet.")
 
@@ -2177,7 +2194,7 @@ elif section == "discovery":
             ]
             grid = pd.DataFrame(grid_rows)
             grid = grid.dropna(how="all")
-            st.dataframe(grid, hide_index=True, use_container_width=True)
+            st_df_safe(grid, hide_index=True, width='stretch')
 
         # ---------- Schemas / tablespaces / dirs
         with tabs[2]:
@@ -2188,7 +2205,7 @@ elif section == "discovery":
                 else:
                     df = pd.DataFrame(schemas)
                     df.columns = [c.title().replace("_", " ") for c in df.columns]
-                st.dataframe(df, hide_index=True, use_container_width=True)
+                st_df_safe(df, hide_index=True, width='stretch')
             else:
                 st.info("No schemas returned.")
 
@@ -2199,7 +2216,7 @@ elif section == "discovery":
                     df = pd.DataFrame({"Tablespace": tbs})
                 else:
                     df = pd.DataFrame(tbs)
-                st.dataframe(df, hide_index=True, use_container_width=True)
+                st_df_safe(df, hide_index=True, width='stretch')
             else:
                 st.info("No tablespaces returned.")
 
@@ -2208,7 +2225,7 @@ elif section == "discovery":
             if isinstance(dirs, list) and dirs:
                 df = pd.DataFrame(dirs)
                 df.columns = [c.title().replace("_", " ") for c in df.columns]
-                st.dataframe(df, hide_index=True, use_container_width=True)
+                st_df_safe(df, hide_index=True, width='stretch')
             else:
                 st.info("No directories returned.")
 
@@ -2217,7 +2234,7 @@ elif section == "discovery":
             tz = snapshot.get("timezone")
             if nls:
                 st.markdown("**NLS Parameters**")
-                st.dataframe(pd.DataFrame(nls), hide_index=True, use_container_width=True)
+                st_df_safe(pd.DataFrame(nls), hide_index=True, width='stretch')
             if tz:
                 tz_val = tz.get("VERSION") if isinstance(tz, dict) else tz
                 st.markdown("**Timezone file version**")

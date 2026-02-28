@@ -1,13 +1,37 @@
 #!/bin/bash
+# Run, do not source: preserves shell options in caller.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  echo "Please execute, not source: $0" >&2
+  return 1
+fi
 set -euo pipefail
 
-APP="/home/zdmuser/zdm-microservices/streamlit_app.py"
+APP_DIR="${HOME_DIR:-/home/zdmuser}/zdm-microservices"
+APP="$APP_DIR/streamlit_app.py"
 LOGDIR="/u01/log"
 LOGFILE="$LOGDIR/streamlit.log"
 PIDFILE="$LOGDIR/streamlit.pid"
+
+RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-/u01/zeus/zeus.env}"
+DEFAULT_ENV="$APP_DIR/zeus.env.sample"
+mkdir -p "$(dirname "$RUNTIME_ENV")"
+[ ! -f "$RUNTIME_ENV" ] && [ -f "$DEFAULT_ENV" ] && cp "$DEFAULT_ENV" "$RUNTIME_ENV"
+
+set -a
+[ -f "$RUNTIME_ENV" ] && { set +u; source "$RUNTIME_ENV"; set -u; }
+set +a
+
+ZEUS_BASE="${ZEUS_BASE:-/u01/zeus}"
 PORT="${STREAMLIT_PORT:-8000}"
+CERT_DEFAULT="${ZEUS_CERT_DIR:-${ZEUS_BASE}/certs}/zeus.crt"
+KEY_DEFAULT="${ZEUS_CERT_DIR:-${ZEUS_BASE}/certs}/zeus.key"
+CERT="${STREAMLIT_SSL_CERT:-$CERT_DEFAULT}"
+KEY="${STREAMLIT_SSL_KEY:-$KEY_DEFAULT}"
+PROTO="https"
+API_BASE_URL="${API_BASE_URL:-https://localhost:${ZEUS_PORT:-8001}}"
 
 mkdir -p "$LOGDIR"
+mkdir -p "$(dirname "$CERT")"
 
 log() { echo "$(date +"%Y-%m-%d %H:%M:%S") - $*" | tee -a "$LOGFILE"; }
 
@@ -15,6 +39,16 @@ log "restart_streamlit.sh started (port=$PORT)"
 
 if [[ ! -f "$APP" ]]; then
   log "ERROR: streamlit_app.py not found: $APP"
+  exit 1
+fi
+
+# require TLS assets
+if [[ ! -f "$CERT" ]]; then
+  log "ERROR: TLS cert not found at $CERT (set STREAMLIT_SSL_CERT)"
+  exit 1
+fi
+if [[ ! -f "$KEY" ]]; then
+  log "ERROR: TLS key not found at $KEY (set STREAMLIT_SSL_KEY)"
   exit 1
 fi
 
@@ -44,11 +78,17 @@ if command -v ss >/dev/null 2>&1; then
   fi
 fi
 
+log "Using TLS cert=$CERT key=$KEY"
+SSL_ARGS="--server.sslCertFile $CERT --server.sslKeyFile $KEY"
+
 log "Starting streamlit..."
+export REQUESTS_CA_BUNDLE="$CERT"
+export API_BASE_URL
 nohup python3.11 -m streamlit run "$APP" \
   --server.address 0.0.0.0 \
   --server.port "$PORT" \
   --server.headless true \
+  $SSL_ARGS \
   >> "$LOGFILE" 2>&1 < /dev/null &
 
 echo $! > "$PIDFILE"
@@ -62,8 +102,8 @@ if command -v ss >/dev/null 2>&1; then
   ss -ltnp | grep ":$PORT" || true
 fi
 
-log "HTTP check:"
-curl -I "http://127.0.0.1:$PORT" || true
+log "Health check ($PROTO):"
+curl -k -m 5 -I "$PROTO://127.0.0.1:$PORT" || true
 
 log "Tail log:"
 tail -n 40 "$LOGFILE" || true

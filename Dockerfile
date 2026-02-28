@@ -70,7 +70,7 @@ COPY zdm-microservices $HOME_DIR/zdm-microservices
 # Change ownership of the directory and its files
 #RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices
 RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices && \
-    chmod +x $HOME_DIR/zdm-microservices/zeus.sh
+    chmod +x $HOME_DIR/zdm-microservices/*.sh
 
 # Switch to $ZDM_USER before running pip3 install
 USER $ZDM_USER
