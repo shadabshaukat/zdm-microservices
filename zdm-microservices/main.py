@@ -635,33 +635,43 @@ def _collect_db_snapshot(
     return snapshot
 
 
-def resolve_project_name(project: Optional[str], required: bool = False) -> str:
-    if not project:
-        if required:
-            raise HTTPException(status_code=400, detail="project is required")
+def resolve_project_name(project: Optional[str], required: bool = False, default: str = "_global") -> str:
+    if project:
+        return project
+    if required:
         raise HTTPException(status_code=400, detail="project is required")
-    return project
+    return default
+
+
+def resolve_project_for_job(project: Optional[str], jobid: Optional[str] = None, required: bool = False) -> str:
+    if project:
+        return project
+    if jobid:
+        inferred = find_project_by_job(jobid)
+        if inferred:
+            return inferred
+    if required:
+        raise HTTPException(status_code=400, detail="project is required for this operation")
+    return "_global"
 
 
 def ensure_dir(project: Optional[str], subdir: str, required: bool = False) -> str:
-    pname = resolve_project_name(project, required=True)
+    pname = resolve_project_name(project, required=required)
     target_dir = os.path.join(MIGRATION_BASE, pname, subdir)
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
 
 
 def get_responses_dir(project: str, required: bool = True) -> str:
-    if not project and required:
-        raise HTTPException(status_code=400, detail="project is required for responses")
-    target_dir = os.path.join(MIGRATION_BASE, "responses", project)
+    pname = resolve_project_name(project, required=required)
+    target_dir = os.path.join(MIGRATION_BASE, "responses", pname)
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
 
 
 def get_scripts_dir(project: str, required: bool = True) -> str:
-    if not project and required:
-        raise HTTPException(status_code=400, detail="project is required for scripts")
-    target_dir = os.path.join(MIGRATION_BASE, "scripts", project)
+    pname = resolve_project_name(project, required=required)
+    target_dir = os.path.join(MIGRATION_BASE, "scripts", pname)
     os.makedirs(target_dir, exist_ok=True)
     return target_dir
 
@@ -710,8 +720,8 @@ def resolve_wallet_path(wallet_name: Optional[str], wallet_path: Optional[str]) 
 
 
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
-    pname = resolve_project_name(project, required=True if required else True)
-    target_dir = get_scripts_dir(pname, required=True)
+    pname = resolve_project_name(project, required=required)
+    target_dir = get_scripts_dir(pname, required=False)
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=".sh", dir=target_dir)
     os.close(fd)
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
@@ -721,15 +731,13 @@ def write_temp_script(prefix: str, content: str, project: Optional[str] = None, 
 
 
 def resolve_response_dir(project: Optional[str], required: bool = False) -> str:
-    pname = resolve_project_name(project, required=True if required else True)
-    return get_responses_dir(pname, required=True)
+    pname = resolve_project_name(project, required=required)
+    return get_responses_dir(pname, required=required)
 
 @app.get("/query/{jobid}")
 def query(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
     # Auto-detect project from projects.json if not provided
-    if not project:
-        project = find_project_by_job(jobid)
-    project = resolve_project_name(project, required=True)
+    project = resolve_project_for_job(project, jobid=jobid, required=True)
     query_script = f"""
     #!/bin/bash
     $ZDM_HOME/bin/zdmcli query job -jobid {jobid}
@@ -773,7 +781,8 @@ def resume(jobid: str, params: ResumeParams = Body(...), username: str = Depends
     if params and params.ignore:
         resume_script_parts[-1] += f" -ignore {params.ignore}"
     resume_script = "\n".join(resume_script_parts)
-    script_path = write_temp_script("resume_", resume_script, params.project)
+    project = resolve_project_for_job(params.project, jobid=jobid, required=False)
+    script_path = write_temp_script("resume_", resume_script, project, required=bool(project))
 
     try:
         result = subprocess.run(
@@ -810,8 +819,8 @@ def resume_pauseagain(jobid: str, params: ResumeParams = Body(...), username: st
 
     # Join the script lines into a single command
     resume_script_v2 = " \\\n".join(resume_pauseagain_script)
-
-    script_path = write_temp_script("resume_pause_", resume_script_v2, params.project)
+    project = resolve_project_for_job(params.project, jobid=jobid, required=False)
+    script_path = write_temp_script("resume_pause_", resume_script_v2, project, required=bool(project))
 
     try:
         result = subprocess.run(
@@ -844,14 +853,12 @@ class DBConnectionParams(BaseModel):
 
 class DBConnectionCheckParams(BaseModel):
     name: str
-    password: Optional[str] = None
-    use_uploaded_tls_wallet: Optional[bool] = False
+    password: str  # required for connectivity
     run_snapshot: bool = False
 
 class DBConnectionDiscoverParams(BaseModel):
     name: str
-    password: Optional[str] = None
-    use_uploaded_tls_wallet: Optional[bool] = False
+    password: str  # required for discovery
     migration_type: Optional[str] = "logical_offline"  # logical_offline, physical_offline, physical_online, hybrid
     role: Optional[str] = None  # optional tag for future compare views
 
@@ -977,9 +984,6 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
         wallet_location = conn_info.get("tls_wallet_uploaded_dir")
         if not wallet_location:
             raise HTTPException(status_code=400, detail="TLS wallet is required for this connection; upload it first.")
-
-    if not test_password:
-        raise HTTPException(status_code=400, detail="Password is required to run discovery.")
 
     protocol = "TCPS" if protocol == "TCPS" else "TCP"
     ssl_match = True if (protocol == "TCPS" and conn_info.get("allow_tls_without_wallet")) else None
@@ -1329,11 +1333,12 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
 
 @app.post("/abort/{jobid}")
 def abort(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
+    project = resolve_project_for_job(project, jobid=jobid, required=False)
     abort_script = f"""
     #!/bin/bash
     $ZDM_HOME/bin/zdmcli abort job -jobid {jobid}
     """
-    abort_script_path = write_temp_script("abort_", abort_script, project)
+    abort_script_path = write_temp_script("abort_", abort_script, project, required=bool(project))
 
     try:
         result = subprocess.run(
@@ -1352,11 +1357,12 @@ def abort(jobid: str, project: Optional[str] = None, username: str = Depends(ver
 
 @app.post("/suspend/{jobid}")
 def suspend(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
+    project = resolve_project_for_job(project, jobid=jobid, required=False)
     suspend_script = f"""
     #!/bin/bash
     $ZDM_HOME/bin/zdmcli suspend job -jobid {jobid}
     """
-    suspend_script_path = write_temp_script("suspend_", suspend_script, project)
+    suspend_script_path = write_temp_script("suspend_", suspend_script, project, required=bool(project))
 
     try:
         result = subprocess.run(
@@ -1375,4 +1381,23 @@ def suspend(jobid: str, project: Optional[str] = None, username: str = Depends(v
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+
+    host = os.getenv("ZEUS_HOST", "127.0.0.1")
+    port = int(os.getenv("ZEUS_PORT", "8001"))
+    base = os.getenv("ZEUS_BASE", "/u01/zeus")
+    ssl_cert = os.getenv("ZEUS_SSL_CERTFILE", f"{base}/certs/zeus.crt")
+    ssl_key = os.getenv("ZEUS_SSL_KEYFILE", f"{base}/certs/zeus.key")
+
+    # Require TLS assets; refuse to start without them.
+    if not os.path.isfile(ssl_cert):
+        raise RuntimeError(f"SSL cert not found at {ssl_cert}; set ZEUS_SSL_CERTFILE.")
+    if not os.path.isfile(ssl_key):
+        raise RuntimeError(f"SSL key not found at {ssl_key}; set ZEUS_SSL_KEYFILE.")
+
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        ssl_certfile=ssl_cert,
+        ssl_keyfile=ssl_key,
+    )

@@ -1,48 +1,77 @@
 # ZEUS Deployment Guide
 
-This guide documents the **current implemented deployment path** for ZEUS, based on the repository scripts and code.
+This guide documents the current deployment path for ZEUS using the repository's container-based scripts. It is written for operators who need to build, run, and maintain a ZEUS instance with persisted runtime state.
 
-Scope of this guide:
-- container image build using a **local ZDM kit zip**
-- container run using repository `build.sh` / `run.sh`
-- runtime checks and operator notes
-- backend/runtime environment behavior
+ZEUS packages two services:
+- a **FastAPI backend** for workflow execution and ZEUS-managed data handling
+- a **Streamlit UI** for operator interaction with common ZDM workflows
 
----
+This guide focuses on:
+- building the container image with a local ZDM kit zip
+- running the container with the repository scripts
+- understanding the persisted runtime layout under `/u01/zeus`
+- configuring authentication, TLS, ports, and runtime behavior
+- performing basic health checks and operator validation
 
-## 1. What is deployed
+## What the container runs
 
-ZEUS has two runtime services inside the current deployment:
+A ZEUS deployment is a containerized runtime built and started through the repository `build.sh` and `run.sh` scripts.
 
-1. **FastAPI backend** (`zdm-microservices/main.py`)
-   - default port: **8001**
-   - executes backend workflows and persists ZEUS-managed data
+At build time, the image includes:
+- the ZEUS application code from `zdm-microservices/`
+- the local ZDM kit zip staged by `build.sh`
+- the Python dependencies needed by the ZEUS services
+- the container startup scripts used to initialize and run ZEUS
 
-2. **Streamlit UI** (`zdm-microservices/streamlit_app.py`)
-   - default port: **8000** (via `restart_streamlit.sh`)
+At runtime, `run.sh` starts the `zeus` container with host networking, a persistent `/u01` volume mount, and any host mappings defined in `.hosts`. The container then runs `zeus.sh`, which performs first-run setup and starts the ZEUS services.
+
+The running container includes these main runtime pieces:
+
+1. **Container startup and runtime scripts**
+   - `zeus.sh` performs first-run runtime initialization and starts the ZEUS services
+   - `restart_microservice.sh` starts or restarts the FastAPI backend
+   - `restart_streamlit.sh` starts or restarts the Streamlit UI
+
+2. **FastAPI backend** (`zdm-microservices/main.py`)
+   - default port: `8001`
+   - executes backend workflows
+   - persists ZEUS-managed runtime data
+
+3. **Streamlit UI** (`zdm-microservices/streamlit_app.py`)
+   - default port: `8000`
    - calls backend endpoints over HTTP Basic Auth
+   - connects to the backend over HTTPS in the current persisted-runtime model
 
----
+4. **Persisted runtime state under `/u01`**
+   - runtime config, auth, certs, logs, and ZEUS-managed data live outside the image so they survive container recreation
 
-## 2. Container deployment prerequisites
+## Deployment model
 
-This repository is documented for **container deployment** (Podman scripts at repo root).
+This repository currently documents a **container deployment** using the scripts at the repository root.
 
-Before building/running, ensure the host has:
+At a high level:
+- `build.sh` builds the image using a **local ZDM kit zip**
+- `run.sh` starts the container with a persistent `/u01` mount
+- `zeus.sh` performs first-run runtime initialization inside the container
+- runtime config, auth, certs, and logs are stored outside the image under `/u01`
 
-- **Podman** available (the provided scripts use `podman`)
-- access to the required source/target network paths used by your migrations
-- a usable local **ZDM kit zip** file (for example `zdm.zip`)
-- a persistent volume strategy for `/u01` (the provided `run.sh` uses `zdm_volume:/u01:Z`)
-- a valid ZEUS auth file (recommended), e.g. `zdm-microservices/.zeus.auth.env`
+This separation is important:
+- **image build** handles packaged software and default environment values
+- **runtime state** under `/u01/zeus` handles persisted config, auth, TLS, and logs
 
-> You do **not** need to manually install Python, `requirements.txt`, or `python-multipart` on the host for the container path. Those are handled in the image build/runtime.
+## Prerequisites
 
----
+Before building and running ZEUS, make sure the host has:
+- **Podman** installed and usable
+- access to the required source and target network paths for your migrations
+- a local **ZDM kit zip** file, for example `zdm.zip`
+- a persistence strategy for `/u01` such as the provided `zdm_volume:/u01:Z`
 
-## 3. Local ZDM kit input (required for image build)
+You do **not** need to manually install Python packages on the host for this container path. Those are handled during image build and container runtime.
 
-Before running `build.sh`, set `ZDM_KIT_PATH` to your local ZDM kit zip file.
+## Build input: local ZDM kit zip
+
+Before running `build.sh`, set `ZDM_KIT_PATH` to your local ZDM kit zip.
 
 Example:
 
@@ -51,140 +80,217 @@ export ZDM_KIT_PATH=/path/to/zdm.zip
 ./build.sh
 ```
 
-Current script behavior (`build.sh`):
-- loads repo `.env`
-- if `ZDM_KIT_PATH` is set, copies it into the build context as `.local_zdm/zdm.zip`
-- fails fast if the local kit is missing before `podman build`
+Operator-relevant behavior:
+- `build.sh` reads the repository `.env`
+- if `ZDM_KIT_PATH` is set, the kit is copied into the build context as `.local_zdm/zdm.zip`
+- the build fails fast if the local kit is missing
+- the `Dockerfile` expects the copied kit at `/tmp/local_zdm/zdm.zip`
 
-Current `Dockerfile` behavior:
-- expects the copied local kit at `/tmp/local_zdm/zdm.zip`
-- fails fast if it is missing
+For operators, the main required action is simply: set `ZDM_KIT_PATH` correctly before running `./build.sh`.
 
-This is an implementation detail; the main operator action is simply to set `ZDM_KIT_PATH` before `./build.sh`.
+## Build and run
 
----
-
-## 4. Container build and run (current scripts)
-
-### 4.1 Build image
+### Build the image
 
 ```bash
 export ZDM_KIT_PATH=/path/to/zdm.zip
 ./build.sh
 ```
 
-What `build.sh` currently does (operator-relevant summary):
-- reads `.env` from repo root
-- passes build args into `podman build`
+What `build.sh` does at a high level:
+- reads `.env` from the repository root
+- passes build arguments into `podman build`
+- prepares the image with the required software and environment defaults
 - ensures a `zdm_volume` Podman volume exists after build
 
-### 4.2 Run container
+### Run the container
 
 ```bash
 ./run.sh
 ```
 
-What `run.sh` currently does:
+What `run.sh` does at a high level:
 - reads host mappings from `.hosts`
-- starts container with:
-  - `--network host`
-  - `--restart=always`
-  - `-v zdm_volume:/u01:Z`
-- container name: `zeus`
+- starts the container using host networking
+- mounts persistent storage at `/u01`
+- restarts the container automatically
+- starts the container under the name `zeus`
 
----
+Current run characteristics:
+- `--network host`
+- `--restart=always`
+- `-v zdm_volume:/u01:Z`
 
-## 5. Runtime environment behavior
+## Runtime layout and persisted state
 
-### 5.1 Backend required environment variables (`main.py`)
+In the current deployment model, `/u01/zeus` is the main persisted runtime location.
 
-Current backend code requires:
+Recommended persisted layout:
+- `/u01/zeus/zeus.env` - runtime config
+- `/u01/zeus/.zeus.auth.env` - API Basic Auth users
+- `/u01/zeus/certs/zeus.crt` and `/u01/zeus/certs/zeus.key` - TLS certificate and key
+- `/u01/log/` - logs
 
-- `ZDM_HOME` (**required**)
-- `ZEUS_DATA` (**required**)
+This layout makes `/u01/zeus` the operator-managed runtime source of truth for configuration and credentials, rather than rebuilding the image for every small runtime change.
 
-`main.py` derives the backend storage root automatically as:
+### First-run behavior
 
+On first run, `zeus.sh` initializes persisted runtime files if they do not already exist:
+- copies `zeus.env.sample` to `/u01/zeus/zeus.env` if missing
+- generates TLS certificate and key if missing
+- creates `/u01/zeus/.zeus.auth.env` from `.zeus.auth.env.sample` if missing
+
+After first run, operators should review and update the generated runtime files, especially credentials.
+
+## Runtime configuration
+
+Edit runtime settings in:
+
+```bash
+/u01/zeus/zeus.env
+```
+
+Key runtime settings include:
+- `ZEUS_BASE` (default `/u01/zeus`) - base path for runtime state
+- `ZEUS_HOST` (default `127.0.0.1`) - backend bind host
+- `ZEUS_PORT` (default `8001`) - backend port
+- `STREAMLIT_PORT` (default `8000`) - UI port
+- `ZEUS_CERT_DIR` (default `$ZEUS_BASE/certs`) - TLS cert/key location
+- `ZEUS_AUTH_FILE` (default `$ZEUS_BASE/.zeus.auth.env`) - auth file path
+- `API_BASE_URL` (optional) - if unset, the UI derives it from the backend port and runtime config
+
+## Required backend environment behavior
+
+The backend requires:
+- `ZDM_HOME`
+- `ZEUS_DATA`
+
+The backend derives:
 - `MIGRATION_BASE = ZEUS_DATA/migration`
 
-and creates it at startup.
+There is no separate operator requirement to set `MIGRATION_BASE` independently if the current code derives it from `ZEUS_DATA`.
 
-Example runtime values (already typically baked into the image via `.env` + `build.sh` + `Dockerfile`):
+Typical runtime values are along the lines of:
 
 ```bash
 export ZDM_HOME=/u01/app/zdmhome
 export ZEUS_DATA=/u01/data
 ```
 
-> In current code, there is **no separate `MIGRATION_BASE` env var requirement**.
+## Authentication
 
-### 5.2 Auth file behavior (`backend_auth.py` / `streamlit_app.py`)
+The runtime auth file is typically:
 
-Backend (`backend_auth.py`):
+```bash
+/u01/zeus/.zeus.auth.env
+```
 
-- Read from `zdm-microservices/.zeus.auth.env` 
+Example format:
 
+```bash
+ZEUS_API_USER_1=zdmuser
+ZEUS_API_USER_1_PASSWORD=YourPassword123#_
+# add ZEUS_API_USER_2 / ZEUS_API_USER_2_PASSWORD as needed
+```
 
-Frontend (`streamlit_app.py`):
-- supports `API_BASE_URL` (default `http://127.0.0.1:8001`)
-- supports `ZDM_API_USER` / `ZDM_API_PASSWORD`
-- can also prefill from `backend_auth.first_user_defaults()`
-- still has development fallback defaults if nothing is provided
+Operator notes:
+- protect this file with restrictive permissions such as `chmod 600`
+- change generated default credentials immediately
+- keep this file in persisted runtime storage, not only inside the image
 
-### 5.3 `.env` behavior in current container scripts
+## HTTPS and TLS trust
 
-Current script flow:
-- `build.sh` reads repo `.env`
-- values are passed as Docker/Podman build args
-- `Dockerfile` sets them as image `ENV`
-- `run.sh` does **not** inject `.env` at runtime via `--env-file`
+In the current persisted-runtime model, ZEUS uses HTTPS with a self-signed certificate stored under the runtime cert directory.
 
-Operational implication:
-- changing `.env` usually requires **rebuild + rerun** to take effect
+Typical certificate location:
 
----
+```bash
+/u01/zeus/certs/zeus.crt
+/u01/zeus/certs/zeus.key
+```
 
-## 6. Ports and health checks
+Current behavior:
+- the backend serves HTTPS
+- the Streamlit UI connects to the backend with TLS verification enabled
+- restart scripts can point `REQUESTS_CA_BUNDLE` to `${ZEUS_CERT_DIR}/zeus.crt`
+
+For command-line testing, you can trust the self-signed cert with:
+
+```bash
+export CURL_CA_BUNDLE=/u01/zeus/certs/zeus.crt
+```
+
+or pass `--cacert` directly in each `curl` command.
+
+## Ports and health checks
 
 Default ports:
-
 - **Streamlit UI:** `8000`
 - **FastAPI backend:** `8001`
 
-After the container is running, basic checks:
+Basic runtime checks:
 
 ```bash
-curl -I http://127.0.0.1:8000
-curl http://127.0.0.1:8001/health
-curl http://127.0.0.1:8001/version
+curl --cacert /u01/zeus/certs/zeus.crt -I https://localhost:${STREAMLIT_PORT:-8000}
+curl --cacert /u01/zeus/certs/zeus.crt https://localhost:${ZEUS_PORT:-8001}/health
+curl --cacert /u01/zeus/certs/zeus.crt https://localhost:${ZEUS_PORT:-8001}/version
 ```
 
-Container checks:
+Container-level checks:
 
 ```bash
 podman ps
 podman logs zeus --tail 200
 ```
 
----
+## Runtime scripts
 
-## 7. Persistence and data layout (operator notes)
+The main runtime scripts are:
+- `zeus.sh` - performs first-run setup for env, auth, and certs; starts both services; keeps PID 1 alive when used as the container entrypoint
+- `restart_microservice.sh` - restarts the backend and expects certs and auth to be present
+- `restart_streamlit.sh` - restarts the UI and derives or uses the configured backend base URL
 
-The provided `run.sh` mounts:
+## Important runtime behavior notes
 
-- `zdm_volume:/u01:Z`
+### Build-time `.env` versus runtime `zeus.env`
 
-With current code and environment defaults, backend-managed ZEUS data is stored under:
+Current script flow includes both build-time and runtime configuration layers.
 
-- `ZEUS_DATA/migration`
-- typically `/u01/data/migration` in the container
+Build-time behavior:
+- `build.sh` reads the repository `.env`
+- values are passed into the image build
+- the `Dockerfile` sets them as image environment values
+- `run.sh` does not currently inject the repo `.env` at runtime using `--env-file`
 
-Use persistent storage for `/u01` so ZEUS data survives container recreation.
+Operational implication:
+- changing repository `.env` values usually requires **rebuild + rerun**
+- changing persisted runtime values in `/u01/zeus/zeus.env` is the preferred path for runtime-level settings handled by the runtime model
 
----
+### Persistence
 
+The provided run path mounts persistent storage at `/u01`.
 
-## 8. Related docs
+With the current defaults, ZEUS-managed data is typically stored under:
 
-- `README.md` — overview and quick start
-- `docs/ZEUS_API_Reference.md` — API endpoints and examples
+```bash
+/u01/data/migration
+```
+
+Use persistent storage for `/u01` so migration data, runtime config, credentials, and certificates survive container recreation.
+
+## Operator validation checklist
+
+After deployment, verify the following:
+- the image built successfully with the intended ZDM kit zip
+- the container is running as `zeus`
+- `/u01/zeus/zeus.env` exists and reflects the intended runtime values
+- `/u01/zeus/.zeus.auth.env` exists and credentials have been updated from defaults
+- `/u01/zeus/certs/` contains the expected certificate and key
+- the UI is reachable on the expected port
+- the backend `/health` and `/version` endpoints respond successfully
+- persisted data under `/u01` remains available after container restart
+
+## Related documents
+
+- `README.md` - repository overview and quick start
+- `docs/ZEUS_API_Reference.md` - API endpoints and examples
