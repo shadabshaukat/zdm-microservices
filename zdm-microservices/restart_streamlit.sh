@@ -75,6 +75,13 @@ if command -v ss >/dev/null 2>&1; then
     log "Port $PORT occupied by pid(s): $pids_on_port; killing..."
     kill $pids_on_port || true
     sleep 1
+    # double-check and force kill if still present
+    pids_on_port="$(ss -ltnp | awk -v p=":$PORT" '$4 ~ p {print $NF}' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u)"
+    if [[ -n "$pids_on_port" ]]; then
+      log "Port $PORT still busy after kill; forcing kill -9: $pids_on_port"
+      kill -9 $pids_on_port || true
+      sleep 1
+    fi
   fi
 fi
 
@@ -96,6 +103,15 @@ sleep 2
 
 newpid="$(cat "$PIDFILE")"
 log "Started pid=$newpid"
+
+# Verify port is owned by new pid; else fail fast
+if command -v ss >/dev/null 2>&1; then
+  pids_on_port="$(ss -ltnp | awk -v p=":$PORT" '$4 ~ p {print $NF}' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u)"
+  if ! echo "$pids_on_port" | grep -qw "$newpid"; then
+    log "ERROR: Port $PORT is not owned by new pid $newpid (pids on port: $pids_on_port)"
+    exit 1
+  fi
+fi
 
 log "Listening check:"
 if command -v ss >/dev/null 2>&1; then
