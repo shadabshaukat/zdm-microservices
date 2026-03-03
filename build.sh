@@ -54,8 +54,9 @@ podman build \
   --build-arg HOSTNAME="$HOSTNAME" \
   --build-arg ZDM_HOME="$ZDM_HOME" \
   --build-arg ZDM_BASE="$ZDM_BASE" \
-  --build-arg ZEUS_LOG="$ZEUS_LOG" \
+  --build-arg ZDM_INSTALL_LOG="$ZDM_INSTALL_LOG" \
   --build-arg ZEUS_DATA="$ZEUS_DATA" \
+  --build-arg ZEUS_BASE="$ZEUS_BASE" \
   --build-arg PATH="$PATH" \
   --format docker \
   -t zeus:latest .

@@ -16,28 +16,38 @@ ARG HOME_DIR
 ARG HOSTNAME
 ARG ZDM_HOME
 ARG ZDM_BASE
-ARG ZEUS_LOG
+ARG ZDM_INSTALL_LOG
 ARG ZEUS_DATA
+ARG ZEUS_BASE
 ARG PATH
 
 ENV HOME_DIR=$HOME_DIR \
     ZDM_HOME=$ZDM_HOME \
     ZDM_BASE=$ZDM_BASE \
-    ZEUS_LOG=$ZEUS_LOG \
+    ZDM_INSTALL_LOG=$ZDM_INSTALL_LOG \
     ZEUS_DATA=$ZEUS_DATA \
+    ZEUS_BASE=$ZEUS_BASE \
     PATH=$PATH
 
 USER root
 RUN yum -y install libaio libnsl ncurses-compat-libs expect glibc-devel hostname numactl openssl python3 sudo openssh-clients xz xz-libs lsof && \
     yum clean all
 
-RUN mkdir -p $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA && \
+RUN mkdir -p $ZDM_HOME $ZDM_BASE $ZEUS_DATA $ZEUS_BASE $ZEUS_BASE/log $ZDM_INSTALL_LOG && \
     ls -la /u01
 
 RUN groupadd -g 1000 $ZDM_GROUP && \
     useradd -u 1000 -m -d $HOME_DIR -g $ZDM_GROUP $ZDM_USER
 
-RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR $ZDM_HOME $ZDM_BASE $ZEUS_LOG $ZEUS_DATA
+RUN chown -R $ZDM_USER:$ZDM_GROUP \
+    $HOME_DIR \
+    "$(dirname "$ZDM_HOME")" \
+    $ZDM_HOME \
+    $ZDM_BASE \
+    $ZEUS_DATA \
+    $ZEUS_BASE \
+    $ZEUS_BASE/log \
+    $ZDM_INSTALL_LOG
 
 RUN mkdir -p $HOME_DIR/.ssh && \
     ssh-keygen -m PEM -t rsa -b 4096 -N '' -f $HOME_DIR/.ssh/id_rsa && \
@@ -64,13 +74,19 @@ ARG ZDM_GROUP
 
 # Switch to root user for file operations
 USER root
-# Copy the zdm-microservices directory into the container with the desired ownership
+# Copy application code and startup scripts into the container
 COPY zdm-microservices $HOME_DIR/zdm-microservices
+COPY start_zdm.sh start_zeus.sh restart_microservice.sh restart_streamlit.sh $HOME_DIR/
 
-# Change ownership of the directory and its files
-#RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices
-RUN chown -R $ZDM_USER:$ZDM_GROUP $HOME_DIR/zdm-microservices && \
-    chmod +x $HOME_DIR/zdm-microservices/*.sh
+# Change ownership and executable bits
+RUN chown -R $ZDM_USER:$ZDM_GROUP \
+    $HOME_DIR/zdm-microservices \
+    $HOME_DIR/start_zdm.sh \
+    $HOME_DIR/start_zeus.sh \
+    $HOME_DIR/restart_microservice.sh \
+    $HOME_DIR/restart_streamlit.sh && \
+    find $HOME_DIR -maxdepth 1 -type f -name \"*.sh\" -exec chmod +x {} \\; && \
+    find $HOME_DIR/zdm-microservices -maxdepth 1 -type f -name \"*.sh\" -exec chmod +x {} \\; || true
 
 # Switch to $ZDM_USER before running pip3 install
 USER $ZDM_USER
@@ -83,7 +99,7 @@ RUN pip3 install --user -r $HOME_DIR/zdm-microservices/requirements.txt
 RUN pip3 install --user --upgrade typing_extensions && \
     ls -la /u01
 
-CMD ["/bin/bash", "-c", "/home/zdmuser/zdm-microservices/zeus.sh && tail -f /dev/null"]
+CMD ["/bin/bash", "-c", "/home/zdmuser/start_zdm.sh && exec /home/zdmuser/start_zeus.sh"]
 
 # Add a health check to confirm the script has finished running
-HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=20 CMD test -f $ZEUS_LOG/.zeus_finished || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=20 CMD test -f ${ZEUS_BASE}/log/.zeus_finished || exit 1

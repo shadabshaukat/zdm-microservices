@@ -6,11 +6,12 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
 fi
 set -euo pipefail
 
-HOME_DIR="${HOME_DIR:-/home/zdmuser}"
+HOME_DIR="${HOME_DIR:?HOME_DIR must be set}"
 APP_DIR="${APP_DIR:-$HOME_DIR/zdm-microservices}"
 MAIN_PY="${MAIN_PY:-$APP_DIR/main.py}"
 
-RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-/u01/zeus/zeus.env}"
+: "${ZEUS_BASE:?ZEUS_BASE must be set}"
+RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-$ZEUS_BASE/zeus.env}"
 DEFAULT_ENV="$APP_DIR/zeus.env.sample"
 AUTH_TEMPLATE="$APP_DIR/.zeus.auth.env.sample"
 mkdir -p "$(dirname "$RUNTIME_ENV")"
@@ -20,14 +21,14 @@ set -a
 [ -f "$RUNTIME_ENV" ] && { set +u; source "$RUNTIME_ENV"; set -u; }
 set +a
 
-ZEUS_BASE="${ZEUS_BASE:-/u01/zeus}"
-ZEUS_HOST="${ZEUS_HOST:-127.0.0.1}"
-ZEUS_PORT="${ZEUS_PORT:-8001}"
-ZEUS_SSL_CERTFILE="${ZEUS_SSL_CERTFILE:-$ZEUS_BASE/certs/zeus.crt}"
-ZEUS_SSL_KEYFILE="${ZEUS_SSL_KEYFILE:-$ZEUS_BASE/certs/zeus.key}"
+ZEUS_HOST="${ZEUS_HOST:?ZEUS_HOST must be set}"
+ZEUS_PORT="${ZEUS_PORT:?ZEUS_PORT must be set}"
+ZEUS_CERT_DIR="${ZEUS_CERT_DIR:-$ZEUS_BASE/certs}"
+ZEUS_SSL_CERTFILE="${ZEUS_SSL_CERTFILE:-$ZEUS_CERT_DIR/zeus.crt}"
+ZEUS_SSL_KEYFILE="${ZEUS_SSL_KEYFILE:-$ZEUS_CERT_DIR/zeus.key}"
 ZEUS_AUTH_FILE="${ZEUS_AUTH_FILE:-$ZEUS_BASE/.zeus.auth.env}"
 
-ZEUS_LOG="${ZEUS_LOG:-/u01/log}"
+ZEUS_LOG="${ZEUS_LOG:-$ZEUS_BASE/log}"
 LOGFILE="${LOGFILE:-$ZEUS_LOG/microservice.log}"
 DEBUGLOG="${DEBUGLOG:-$ZEUS_LOG/debug.log}"
 PIDFILE="${PIDFILE:-$ZEUS_LOG/microservice.pid}"
@@ -58,7 +59,7 @@ EOF
   log "Created default API auth file at $ZEUS_AUTH_FILE; please change credentials."
 fi
 
-# If certs are missing, let main.py fail fast; generation is handled in zeus.sh
+# If certs are missing, let main.py fail fast; generation is handled in start_zeus.sh
 
 log "restart_microservice.sh started"
 log "MAIN_PY=$MAIN_PY"

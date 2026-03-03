@@ -41,13 +41,13 @@ Replace them with your real ZEUS credentials.
 ZEUS serves HTTPS. If you are using a self-signed certificate, point curl to the ZEUS certificate:
 
 ```bash
-export CURL_CA_BUNDLE=${ZEUS_CERT_DIR:-/u01/zeus/certs}/zeus.crt
+export CURL_CA_BUNDLE=${ZEUS_CERT_DIR:-/u01/data/zeus/certs}/zeus.crt
 ```
 
 Or pass it directly:
 
 ```bash
---cacert ${ZEUS_CERT_DIR:-/u01/zeus/certs}/zeus.crt
+--cacert ${ZEUS_CERT_DIR:-/u01/data/zeus/certs}/zeus.crt
 ```
 
 ### Useful live schema endpoints
