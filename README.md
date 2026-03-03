@@ -49,24 +49,26 @@ This repository uses a simple operator-first layout:
 
 ```text
 .
-├── build.sh
-├── Dockerfile
+├── build.sh                     # build the ZEUS container image from local repo files and ZDM kit
+├── Dockerfile                   # container image definition for ZEUS runtime
 ├── README.md
-├── run.sh
+├── run.sh                       # run the ZEUS container with persistent /u01 storage
+├── restart_microservice.sh      # restart ZEUS FastAPI backend (uses runtime env)
+├── restart_streamlit.sh         # restart ZEUS Streamlit UI (uses runtime env)
+├── start_zdm.sh                 # install/start ZDM service
+├── start_zeus.sh                # start ZEUS backend/UI
 ├── docs/
 │   ├── ZEUS_API_Reference.md
 │   └── ZEUS_Deployment_Guide.md
 └── zdm-microservices/
-    ├── backend_auth.py
-    ├── main.py
+    ├── backend_auth.py            # loads ZEUS API Basic Auth users from runtime auth file
+    ├── main.py                    # FastAPI backend entrypoint
     ├── requirements.txt
-    ├── restart_microservice.sh
-    ├── restart_streamlit.sh
     ├── sql_catalog.json
-    ├── streamlit_app.py
-    ├── zeus.env.sample            # template -> /u01/zeus/zeus.env
-    ├── .zeus.auth.env.sample      # template -> /u01/zeus/.zeus.auth.env
-    └── zeus.sh
+    ├── streamlit_app.py           # Streamlit UI entrypoint
+    ├── zeus.env.sample            # template -> /u01/data/zeus/zeus.env
+    ├── .zeus.auth.env.sample      # template -> /u01/data/zeus/.zeus.auth.env
+    └── .zeus.auth.env             # (sample copy may be created at runtime)
 ```
 
 ## Quick start (container)
@@ -100,27 +102,27 @@ export ZDM_KIT_PATH=/path/to/zdm.zip
 ### 5) Verify services
 
 ```bash
-curl --cacert /u01/zeus/certs/zeus.crt -I https://localhost:8000
-curl --cacert /u01/zeus/certs/zeus.crt https://localhost:8001/health
-curl --cacert /u01/zeus/certs/zeus.crt https://localhost:8001/version
+curl --cacert /u01/data/zeus/certs/zeus.crt -I https://localhost:8000
+curl --cacert /u01/data/zeus/certs/zeus.crt https://localhost:8001/health
+curl --cacert /u01/data/zeus/certs/zeus.crt https://localhost:8001/version
 ```
 
 ## Runtime configuration and persistence
 
 ZEUS runs both the Streamlit UI and the FastAPI backend over **HTTPS** using a self-signed certificate.
 
-All runtime state is persisted under `/u01/zeus`:
+All runtime state is persisted under `/u01/data/zeus`:
 
-- Runtime config: `/u01/zeus/zeus.env`
-- API auth users: `/u01/zeus/.zeus.auth.env` unless overridden with `ZEUS_AUTH_FILE`
-- TLS cert and key: `${ZEUS_CERT_DIR:-/u01/zeus/certs}/zeus.crt` and `${ZEUS_CERT_DIR:-/u01/zeus/certs}/zeus.key`
-- Migration working state: `${ZEUS_DATA}`
-- Logs: `/u01/log/`
+- Runtime config: `/u01/data/zeus/zeus.env`
+- API auth users: `/u01/data/zeus/.zeus.auth.env` unless overridden with `ZEUS_AUTH_FILE`
+- TLS cert and key: `${ZEUS_CERT_DIR:-/u01/data/zeus/certs}/zeus.crt` and `${ZEUS_CERT_DIR:-/u01/data/zeus/certs}/zeus.key`
+- Migration working state: `${MIGRATION_BASE}`
+- Logs: `/u01/data/zeus/log/`
 
 On first start, ZEUS:
 
-- copies `zdm-microservices/zeus.env.sample` to `/u01/zeus/zeus.env` if it does not already exist
-- copies `zdm-microservices/.zeus.auth.env.sample` to `/u01/zeus/.zeus.auth.env` if it does not already exist
+- copies `zdm-microservices/zeus.env.sample` to `/u01/data/zeus/zeus.env` if it does not already exist
+- copies `zdm-microservices/.zeus.auth.env.sample` to `/u01/data/zeus/.zeus.auth.env` if it does not already exist
 - generates TLS certificates if they are missing
 
 ### Default ports
@@ -128,14 +130,14 @@ On first start, ZEUS:
 - **Streamlit UI:** `8000`
 - **FastAPI backend:** `8001`
 
-Ports can be overridden in `/u01/zeus/zeus.env`.
+Ports can be overridden in `/u01/data/zeus/zeus.env`.
 
 ### Configuration notes
 
 - The backend requires `ZDM_HOME` and `ZEUS_DATA`
 - `MIGRATION_BASE` is derived automatically as `ZEUS_DATA/migration`
 - `.env` at the repository root is used at build time
-- Runtime overrides should be placed in `/u01/zeus/zeus.env`
+- Runtime overrides should be placed in `/u01/data/zeus/zeus.env`
 
 For step-by-step setup details and operational guidance, refer to the Deployment Guide.
 

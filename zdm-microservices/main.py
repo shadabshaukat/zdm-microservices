@@ -1384,7 +1384,9 @@ if __name__ == "__main__":
 
     host = os.getenv("ZEUS_HOST", "127.0.0.1")
     port = int(os.getenv("ZEUS_PORT", "8001"))
-    base = os.getenv("ZEUS_BASE", "/u01/zeus")
+    base = os.getenv("ZEUS_BASE")
+    if not base:
+        raise RuntimeError("ZEUS_BASE must be set for TLS path resolution.")
     ssl_cert = os.getenv("ZEUS_SSL_CERTFILE", f"{base}/certs/zeus.crt")
     ssl_key = os.getenv("ZEUS_SSL_KEYFILE", f"{base}/certs/zeus.key")
 

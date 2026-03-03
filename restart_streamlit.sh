@@ -6,13 +6,13 @@ if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
 fi
 set -euo pipefail
 
-APP_DIR="${HOME_DIR:-/home/zdmuser}/zdm-microservices"
-APP="$APP_DIR/streamlit_app.py"
-LOGDIR="/u01/log"
-LOGFILE="$LOGDIR/streamlit.log"
-PIDFILE="$LOGDIR/streamlit.pid"
+: "${HOME_DIR:?HOME_DIR must be set}"
+: "${ZEUS_BASE:?ZEUS_BASE must be set}"
 
-RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-/u01/zeus/zeus.env}"
+APP_DIR="${APP_DIR:-$HOME_DIR/zdm-microservices}"
+APP="$APP_DIR/streamlit_app.py"
+
+RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-$ZEUS_BASE/zeus.env}"
 DEFAULT_ENV="$APP_DIR/zeus.env.sample"
 mkdir -p "$(dirname "$RUNTIME_ENV")"
 [ ! -f "$RUNTIME_ENV" ] && [ -f "$DEFAULT_ENV" ] && cp "$DEFAULT_ENV" "$RUNTIME_ENV"
@@ -21,14 +21,20 @@ set -a
 [ -f "$RUNTIME_ENV" ] && { set +u; source "$RUNTIME_ENV"; set -u; }
 set +a
 
-ZEUS_BASE="${ZEUS_BASE:-/u01/zeus}"
-PORT="${STREAMLIT_PORT:-8000}"
+: "${ZEUS_BASE:?ZEUS_BASE must be set (after env load)}"
+: "${ZEUS_PORT:?ZEUS_PORT must be set}"
+
+LOGDIR="${ZEUS_LOG:-$ZEUS_BASE/log}"
+LOGFILE="$LOGDIR/streamlit.log"
+PIDFILE="$LOGDIR/streamlit.pid"
+
+PORT="${STREAMLIT_PORT:?STREAMLIT_PORT must be set}"
 CERT_DEFAULT="${ZEUS_CERT_DIR:-${ZEUS_BASE}/certs}/zeus.crt"
 KEY_DEFAULT="${ZEUS_CERT_DIR:-${ZEUS_BASE}/certs}/zeus.key"
 CERT="${STREAMLIT_SSL_CERT:-$CERT_DEFAULT}"
 KEY="${STREAMLIT_SSL_KEY:-$KEY_DEFAULT}"
 PROTO="https"
-API_BASE_URL="${API_BASE_URL:-https://localhost:${ZEUS_PORT:-8001}}"
+API_BASE_URL="${API_BASE_URL:-https://localhost:${ZEUS_PORT}}"
 
 mkdir -p "$LOGDIR"
 mkdir -p "$(dirname "$CERT")"
@@ -108,7 +114,8 @@ log "Started pid=$newpid"
 if command -v ss >/dev/null 2>&1; then
   pids_on_port="$(ss -ltnp | awk -v p=":$PORT" '$4 ~ p {print $NF}' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u)"
   if ! echo "$pids_on_port" | grep -qw "$newpid"; then
-    log "ERROR: Port $PORT is not owned by new pid $newpid (pids on port: $pids_on_port)"
+    log "ERROR: Port $PORT is not owned by new pid $newpid (pids on port: $pids_on_port); killing listeners and exiting."
+    [[ -n "$pids_on_port" ]] && kill -9 $pids_on_port || true
     exit 1
   fi
 fi
@@ -119,7 +126,7 @@ if command -v ss >/dev/null 2>&1; then
 fi
 
 log "Health check ($PROTO):"
-curl -k -m 5 -I "$PROTO://127.0.0.1:$PORT" || true
+curl --cacert "$CERT" -m 5 -I "$PROTO://127.0.0.1:$PORT" || true
 
 log "Tail log:"
 tail -n 40 "$LOGFILE" || true

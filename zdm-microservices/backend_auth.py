@@ -3,7 +3,7 @@ Shared helpers to load ZEUS API Basic Auth users from .zeus.auth.env.
 
 Rules:
 - Primary location: env var ZEUS_AUTH_FILE (optional).
-- Default path: /u01/zeus/.zeus.auth.env (persistent).
+- Otherwise derived from ZEUS_BASE/.zeus.auth.env (ZEUS_BASE is required).
 - Required keys: ZEUS_API_USER_<N> and ZEUS_API_USER_<N>_PASSWORD (N is any token).
 - Passwords are not logged or printed.
 """
@@ -21,8 +21,13 @@ class AuthConfigError(RuntimeError):
 
 def _auth_file_path() -> Path:
     env_path = os.getenv("ZEUS_AUTH_FILE")
-    default_path = Path("/u01/zeus/.zeus.auth.env")
-    path = Path(env_path).expanduser() if env_path else default_path
+    if env_path:
+        path = Path(env_path).expanduser()
+    else:
+        base = os.getenv("ZEUS_BASE")
+        if not base:
+            raise AuthConfigError("ZEUS_BASE must be set when ZEUS_AUTH_FILE is not provided.")
+        path = Path(base) / ".zeus.auth.env"
     if not path.exists():
         raise AuthConfigError(f"ZEUS auth file not found at {path}")
     return path
