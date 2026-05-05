@@ -94,10 +94,14 @@ fi
 systemctl --user daemon-reload
 systemctl --user enable "$SERVICE_NAME" >/dev/null
 
-if systemctl --user is-active --quiet "$SERVICE_NAME"; then
-  echo "ZEUS service is already running."
+if systemctl --user is-active --quiet "$SERVICE_NAME" &&
+   podman ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Status}}' | grep -q '^Up'; then
+  echo "ZEUS service and container are already running."
 else
-  echo "Starting ZEUS service..."
+  echo "Starting or restarting ZEUS service..."
+  systemctl --user stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+  podman rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  systemctl --user reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
   systemctl --user start "$SERVICE_NAME"
 fi
 

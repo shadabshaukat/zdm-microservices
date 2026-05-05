@@ -12,7 +12,11 @@ LOG_DIR="$ZDM_INSTALL_LOG"
 LOG_FILE="$LOG_DIR/zdm_install.log"
 INSTALL_FLAG="$ZDM_BASE/.zdm_installed"
 
-mkdir -p "$LOG_DIR"
+mkdir -p \
+  "$LOG_DIR" \
+  "$(dirname "$ZDM_HOME")" \
+  "$ZDM_HOME" \
+  "$ZDM_BASE"
 
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') - $*" | tee -a "$LOG_FILE"
