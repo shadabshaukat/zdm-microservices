@@ -106,6 +106,13 @@ _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 class WriteResponseFileRequest(BaseModel):
     project: str
     lines: List[str]
+    migration_method: Optional[str] = None
+
+
+class CopyResponseFileRequest(BaseModel):
+    source_project: str
+    target_project: str
+    migration_method: str
 
 
 class SavedJobParams(BaseModel):
@@ -114,6 +121,7 @@ class SavedJobParams(BaseModel):
     rsp: Optional[str] = None
     run_type: str = "EVAL"
     sourcedb: Optional[str] = None
+    sourcesid: Optional[str] = None
     sourcenode: Optional[str] = None
     srcauth: Optional[str] = None
     srcarg1: Optional[str] = None
@@ -160,8 +168,48 @@ def _normalize_rsp_line_value(value: Any) -> str:
         return value
     return str(value)
 
-def _write_responsefile_lines(project: str, lines_in: List[str]) -> Dict[str, Any]:
+
+def _normalize_migration_method(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _require_migration_method(value: Any) -> str:
+    migration_method = _normalize_migration_method(value)
+    if not migration_method:
+        raise HTTPException(status_code=400, detail="migration_method is required")
+    return migration_method
+
+
+def _is_identity_response_line(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return False
+    key = stripped.split("=", 1)[0].strip().lower()
+    return key in {"project", "filename"}
+
+
+def _responsefile_path(project: str) -> str:
+    response_dir = get_responses_dir(project, required=True)
+    return os.path.join(response_dir, f"{project}.rsp")
+
+
+def _sync_project_response_metadata(project: str, migration_method: Optional[str] = None) -> None:
+    projects = load_projects()
+    if project not in projects:
+        raise HTTPException(status_code=404, detail=f"Project '{project}' not found")
+
+    projects[project]["rsp"] = f"{project}.rsp"
+
+    normalized_method = _normalize_migration_method(migration_method)
+    if normalized_method:
+        projects[project]["migration_method"] = normalized_method
+
+    save_projects(projects)
+
+
+def _write_responsefile_lines(project: str, lines_in: List[str], migration_method: Optional[str] = None) -> Dict[str, Any]:
     project = _validate_project_name(project)
+    _load_project_or_404(project)
 
     if not isinstance(lines_in, list) or not all(isinstance(x, str) for x in lines_in):
         raise HTTPException(status_code=400, detail="lines must be a list of strings")
@@ -185,22 +233,63 @@ def _write_responsefile_lines(project: str, lines_in: List[str]) -> Dict[str, An
         handle.write(content)
 
     sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    # Best-effort: record rsp name on the project for UI auto-fill
-    try:
-        projects = load_projects()
-        if project in projects:
-            projects[project]["rsp"] = f"{project}.rsp"
-            save_projects(projects)
-    except Exception:
-        pass
 
-    return {
+    effective_migration_method = _normalize_migration_method(migration_method)
+    _sync_project_response_metadata(project, effective_migration_method)
+
+    result = {
         "status": "success",
         "message": f"Response file {project}.rsp written successfully",
         "path": script_path,
         "line_count": len(cleaned),
         "sha256": sha256,
     }
+    if effective_migration_method:
+        result["migration_method"] = effective_migration_method
+    return result
+
+
+def _copy_responsefile_from_project(source_project: str, target_project: str, migration_method: str) -> Dict[str, Any]:
+    source_project = _validate_project_name(source_project)
+    target_project = _validate_project_name(target_project)
+    requested_method = _require_migration_method(migration_method)
+
+    projects = load_projects()
+    source_record = projects.get(source_project)
+    target_record = projects.get(target_project)
+
+    if not source_record:
+        raise HTTPException(status_code=404, detail=f"Source project '{source_project}' not found")
+    if not target_record:
+        raise HTTPException(status_code=404, detail=f"Target project '{target_project}' not found")
+
+    source_method = _normalize_migration_method(source_record.get("migration_method"))
+    if not source_method:
+        raise HTTPException(status_code=400, detail="Source project migration_method is required")
+    if source_method != requested_method:
+        raise HTTPException(status_code=400, detail="Source project migration_method does not match requested migration_method")
+
+    target_method = _normalize_migration_method(target_record.get("migration_method"))
+    if target_method and target_method != requested_method:
+        raise HTTPException(status_code=400, detail="Target project migration_method does not match requested migration_method")
+
+    source_path = _responsefile_path(source_project)
+    if not os.path.exists(source_path):
+        raise HTTPException(status_code=404, detail="Source response file not found")
+
+    try:
+        with open(source_path, "r", encoding="utf-8") as handle:
+            source_lines = handle.read().splitlines()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read source response file: {exc}") from exc
+
+    copied_lines = [line for line in source_lines if not _is_identity_response_line(line)]
+    result = _write_responsefile_lines(target_project, copied_lines, migration_method=requested_method)
+    result["source_project"] = source_project
+    result["target_project"] = target_project
+    result["migration_method"] = requested_method
+    result["message"] = f"Response file values copied from '{source_project}' to '{target_project}'"
+    return result
 
 _sql_cache: Optional[Dict[str, str]] = None
 
@@ -386,42 +475,16 @@ def derive_platform_type(snapshot: Dict[str, Any]) -> str:
     cloud_identity = snapshot.get("cloud_identity")
     exa_rows = snapshot.get("exadata_cells") or []
 
-    def is_error(val: Any) -> bool:
-        return isinstance(val, dict) and "error" in val
+    cloud_row: Dict[str, Any] = {}
+    rows = cloud_identity if isinstance(cloud_identity, list) else [cloud_identity]
+    for row in rows:
+        if isinstance(row, dict) and "error" not in row and row.get("DATABASE_OCID"):
+            cloud_row = row
+            break
 
-    cloud_val = None
-    if isinstance(cloud_identity, list) and cloud_identity:
-        # pick first non-null value from list of dicts or scalars
-        for item in cloud_identity:
-            if is_error(item):
-                continue
-            if isinstance(item, dict):
-                for v in item.values():
-                    if v:
-                        cloud_val = v
-                        break
-            elif item:
-                cloud_val = item
-            if cloud_val:
-                break
-    elif isinstance(cloud_identity, dict):
-        if not is_error(cloud_identity):
-            for v in cloud_identity.values():
-                if v:
-                    cloud_val = v
-                    break
-    elif isinstance(cloud_identity, str):
-        cloud_val = cloud_identity
-
-    ci_lower = str(cloud_val or "").lower()
-    infra = ""
-    try:
-        import json as _json
-        parsed = _json.loads(cloud_val) if cloud_val else None
-        if isinstance(parsed, dict):
-            infra = str(parsed.get("INFRASTRUCTURE", "")).lower()
-    except Exception:
-        infra = ""
+    cloud_val = str(cloud_row.get("DATABASE_OCID") or "")
+    infra = str(cloud_row.get("INFRASTRUCTURE") or "").lower()
+    ci_lower = cloud_val.lower()
 
     if cloud_val and "autonomousdatabase" in ci_lower:
         if "shared" in infra:
@@ -1056,13 +1119,21 @@ def get_latest_discovery(name: str, username: str = Depends(verify_credentials))
 @app.post("/WriteResponseFile")
 def write_response_file(payload: WriteResponseFileRequest, username: str = Depends(verify_credentials)):
     # Write-only endpoint: the frontend supplies the final response-file lines.
-    return _write_responsefile_lines(payload.project, payload.lines)
+    return _write_responsefile_lines(payload.project, payload.lines, migration_method=payload.migration_method)
+
+
+@app.post("/responsefile/copy")
+def copy_response_file(payload: CopyResponseFileRequest, username: str = Depends(verify_credentials)):
+    return _copy_responsefile_from_project(payload.source_project, payload.target_project, payload.migration_method)
+
 
 class RunJobParams(BaseModel):
     project: str
     run_type: str = "EVAL"  # EVAL | MIGRATE
     rsp: Optional[str] = None
     dry_run: Optional[bool] = False
+    sourcedb: Optional[str] = None
+    sourcesid: Optional[str] = None
     sourcenode: Optional[str] = None
     srcauth: Optional[str] = None
     srcarg1: Optional[str] = None
@@ -1108,6 +1179,8 @@ def run_job(params: RunJobParams, username: str = Depends(verify_credentials)):
             lines.append(f"    {flag} {value} \\")
 
     add("-rsp", params.rsp)
+    add("-sourcedb", params.sourcedb)
+    add("-sourcesid", params.sourcesid)
     add("-sourcenode", params.sourcenode)
     add("-srcauth", params.srcauth)
     add("-srcarg1", params.srcarg1)

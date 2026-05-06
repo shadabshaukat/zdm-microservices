@@ -273,6 +273,9 @@ with st.sidebar:
     st.caption(f"User: {st.session_state.get('username','') or 'not set'}")
 
 section = nav_options.get(nav_choice, "settings")
+previous_section = st.session_state.get("_active_section")
+entering_response = section == "response" and previous_section != "response"
+st.session_state["_active_section"] = section
 
 if section != "settings" and not api_base:
     st.warning("Please configure Backend Connection first.")
@@ -566,6 +569,21 @@ elif section == "projects":
 # Response Files (Productized, REAL-TIME, CONDITIONAL UI)
 # -----------------------------
 elif section == "response":
+    def clear_response_form_state(include_project: bool = False):
+        keep_response_keys = set() if include_project else {"rf_project", "rf_active_project"}
+        for key in list(st.session_state.keys()):
+            if key.startswith("rf_") and key not in keep_response_keys:
+                st.session_state.pop(key, None)
+        st.session_state["rf_form_loaded_project"] = ""
+        st.session_state["rf_use_manual"] = False
+        st.session_state["rf_manual_text"] = ""
+        if include_project:
+            st.session_state["rf_project"] = "-- Select project --"
+            st.session_state["rf_active_project"] = ""
+
+    if entering_response:
+        clear_response_form_state(include_project=True)
+
     header_l, header_r = st.columns([4.5, 1.5], vertical_alignment="center")
     with header_l:
         st.markdown("## Response Files")
@@ -581,8 +599,13 @@ elif section == "response":
 
 
     if project == "-- Select project --":
+        st.session_state["rf_active_project"] = ""
         st.info("Select a project to start.")
         st.stop()
+
+    if st.session_state.get("rf_active_project") != project:
+        st.session_state["rf_active_project"] = project
+        st.session_state["rf_form_loaded_project"] = ""
 
     # options
     dbtype_options = {
@@ -657,8 +680,10 @@ elif section == "response":
         return parsed
 
     def apply_rsp_to_state(project_name: str):
+        clear_response_form_state()
         rsp_resp = api_request("get", f"/responsefile/{project_name}", api_base, auth, quiet=True)
         if not (isinstance(rsp_resp, dict) and rsp_resp.get("status") == "success"):
+            st.session_state["rf_form_loaded_project"] = project_name
             return
         content = rsp_resp.get("content", "")
         parsed = parse_rsp_content(content)
@@ -681,8 +706,6 @@ elif section == "response":
             "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME": "rf_export_dir_name",
             "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH": "rf_export_dir_path",
             "TABLESPACEDETAILS_AUTOREMAP": "rf_autoremap",
-            "TABLESPACEDETAILS_REMAPTARGET": "rf_remap_target",
-            "TABLESPACEDETAILS_REMAPTEMPTARGET": "rf_remap_temp_target",
             "DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME": "rf_bucket_ns",
             "DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME": "rf_bucket_name",
             "OCIAUTHENTICATIONDETAILS_REGIONID": "rf_oci_region",
@@ -765,6 +788,53 @@ elif section == "response":
         if migration_method in disallowed_methods:
             st.warning(f"{migration_method} is not selectable yet; using {default_method}.")
             migration_method = default_method
+
+        selected_migration_method = str(migration_method or "").strip().upper()
+        copy_candidates = []
+        if isinstance(projects_resp, dict) and selected_migration_method:
+            for candidate_name, candidate_project in projects_resp.items():
+                if candidate_name == project or not isinstance(candidate_project, dict):
+                    continue
+                candidate_method = str(candidate_project.get("migration_method") or "").strip().upper()
+                if candidate_method == selected_migration_method:
+                    copy_candidates.append(candidate_name)
+
+        if copy_candidates:
+            copy_source_options = ["-- Select project --"] + copy_candidates
+            if st.session_state.get("rf_copy_source_project") not in copy_source_options:
+                st.session_state["rf_copy_source_project"] = copy_source_options[0]
+
+            copy_col_source, copy_col_action = st.columns([3, 1], vertical_alignment="bottom")
+            with copy_col_source:
+                copy_source_project = st.selectbox(
+                    "Copy values from project",
+                    copy_source_options,
+                    key="rf_copy_source_project",
+                )
+            with copy_col_action:
+                copy_clicked = st.button(
+                    "Copy values",
+                    key="rf_copy_values_btn",
+                    disabled=copy_source_project == "-- Select project --",
+                    width='stretch',
+                )
+
+            if copy_clicked:
+                copy_payload = {
+                    "source_project": copy_source_project,
+                    "target_project": project,
+                    "migration_method": selected_migration_method,
+                }
+                copy_resp = api_request("post", "/responsefile/copy", api_base, auth, payload=copy_payload)
+                if copy_resp:
+                    st.session_state["rf_use_manual"] = False
+                    st.session_state["rf_manual_text"] = ""
+                    st.session_state.pop("rf_remap_table", None)
+                    st.session_state.pop("rf_additional_table", None)
+                    st.session_state["rf_form_loaded_project"] = ""
+                    st.rerun()
+        else:
+            st.caption("No same-method source projects available.")
 
         medium_options = medium_options_map.get(migration_type, ["OSS"])
         if st.session_state.get("rf_medium") not in medium_options:
@@ -916,7 +986,7 @@ elif section == "response":
 
         jobmode = metadatafirst = deletedumps = fixinvalid = ""
         export_dir_name = export_dir_path = ""
-        autoremap = remap_target = remap_temp_target = ""
+        autoremap = ""
 
         if migration_type in ["Logical", "Hybrid"]:
             st.divider()
@@ -935,10 +1005,6 @@ elif section == "response":
 
                 with st.expander("Tablespace remap", expanded=expand_all):
                     autoremap = st.selectbox(field_label("Auto remap", True), ["TRUE", "FALSE"], index=0, key="rf_autoremap", help=param_help("TABLESPACEDETAILS_AUTOREMAP"))
-
-                    remap_target = st.text_input(field_label("Default remap target", True), value="DATA", key="rf_remap_target", help=param_help("TABLESPACEDETAILS_REMAPTARGET"))
-
-                    remap_temp_target = st.selectbox(field_label("Remap temp tablespaces", True), ["TRUE", "FALSE"], index=0, key="rf_remap_temp_target", help=param_help("TABLESPACEDETAILS_REMAPTEMPTARGET"))
 
                     st.caption("Metadata remaps (`DATAPUMPSETTINGS_METADATAREMAPS`)")
                     remap_prefill = st.session_state.pop("rf_remap_prefill", None)
@@ -1020,8 +1086,6 @@ elif section == "response":
                     "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME": export_dir_name,
                     "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH": export_dir_path,
                     "TABLESPACEDETAILS_AUTOREMAP": autoremap,
-                    "TABLESPACEDETAILS_REMAPTARGET": remap_target,
-                    "TABLESPACEDETAILS_REMAPTEMPTARGET": remap_temp_target,
                     "include_schemas": include_schemas,
                 }
             )
@@ -1178,6 +1242,11 @@ elif section == "response":
 
 
 
+        payload_to_submit = {
+            "project": project,
+            "lines": lines_to_submit,
+            "migration_method": selected_migration_method,
+        }
         data = api_request("post", "/WriteResponseFile", api_base, auth, payload=payload_to_submit)
         if data:
             st.success(data.get("message", "Response file created"))
@@ -1246,14 +1315,38 @@ if section == "createjob":
 
     # Auto-load job definition if exists for project+run_type
     auto_job_key = f"{project}:{run_type}".lower()
+    auto_load_state_key = "runjob_auto_loaded_key"
+    runjob_form_state_keys = [
+        "runjob_sourcedb",
+        "runjob_sourcesid",
+        "runjob_sourcenode",
+        "runjob_srcauth",
+        "runjob_srcarg1",
+        "runjob_srcarg2",
+        "runjob_srcarg3",
+        "runjob_sourcesyswallet_name",
+        "runjob_targetnode",
+        "runjob_tgtauth",
+        "runjob_tgtarg1",
+        "runjob_tgtarg2",
+        "runjob_tgtarg3",
+        "runjob_advisor_mode",
+        "runjob_flow_control",
+        "runjob_genfixup",
+        "runjob_custom_args",
+    ]
+    form_state_missing = not any(key in st.session_state for key in runjob_form_state_keys)
+    should_auto_load = bool(pending_load) or st.session_state.get(auto_load_state_key) != auto_job_key or form_state_missing
     if project != "-- Select project --" and isinstance(saved_jobs_resp, dict):
         for name, job in saved_jobs_resp.items():
             if not isinstance(job, dict):
                 continue
-            if (pending_load == name) or (str(job.get("project")) == project and (job.get("run_type") or "").upper() == run_type):
+            is_auto_match = str(job.get("project")) == project and (job.get("run_type") or "").upper() == run_type
+            if (pending_load == name) or (should_auto_load and is_auto_match):
                 # Populate fields once per selection
                 st.session_state["runjob_rsp"] = job.get("rsp") or f"{project}.rsp"
                 st.session_state["runjob_sourcedb"] = job.get("sourcedb") or ""
+                st.session_state["runjob_sourcesid"] = job.get("sourcesid") or ""
                 st.session_state["runjob_sourcenode"] = job.get("sourcenode") or ""
                 st.session_state["runjob_srcauth"] = job.get("srcauth") or ""
                 st.session_state["runjob_srcarg1"] = job.get("srcarg1") or ""
@@ -1283,22 +1376,29 @@ if section == "createjob":
                 st.session_state["runjob_schedule_text"] = "" if st.session_state.get("runjob_schedule_now") else (job.get("schedule") or "")
                 st.session_state["runjob_listphases"] = bool(job.get("listphases"))
                 st.session_state["runjob_custom_args"] = "\n".join(job.get("custom_args") or [])
+                st.session_state[auto_load_state_key] = auto_job_key
                 break
 
     if project == "-- Select project --":
         st.info("Select a project to start.")
         st.stop()
 
-    migration_type = ""
-    if isinstance(projects_resp, dict):
-        migration_type = str(projects_resp.get(project, {}).get("migration_type", "") or "").upper()
-    if not migration_type:
-        migration_type = "LOGICAL_OFFLINE"
-
     def _blank(v: Any) -> bool:
         return v is None or (isinstance(v, str) and not v.strip())
 
     proj_obj = projects_resp.get(project, {}) if isinstance(projects_resp, dict) else {}
+    project_migration_method = str(proj_obj.get("migration_method") or "").strip().upper()
+    supported_migration_methods = {
+        "OFFLINE_LOGICAL": "LOGICAL_OFFLINE",
+    }
+    if not project_migration_method:
+        st.error("Project migration_method is required in projects.json before creating a job.")
+        st.stop()
+    migration_type = supported_migration_methods.get(project_migration_method)
+    if not migration_type:
+        st.error(f"Create Job currently supports OFFLINE_LOGICAL only. Project migration_method is {project_migration_method}.")
+        st.stop()
+
     target_conn_name = proj_obj.get("target_connection") or proj_obj.get("target") or ""
     target_db_type = ""
     if isinstance(connections_resp, dict) and target_conn_name:
@@ -1306,72 +1406,15 @@ if section == "createjob":
 
     def _show_target_ssh(db_type: str) -> bool:
         return (db_type or "").upper() not in ("ADBD", "ADBS", "ADBCC")
-    existing_payload = None
-    for k in [
-        "existing_payload",
-        "existing_response_payload",
-        "rsp_payload",
-        "response_payload",
-        "payload",
-        "responsefile_payload",
-        "response_file_payload",
-    ]:
-        v = proj_obj.get(k) if isinstance(proj_obj, dict) else None
-        if isinstance(v, dict) and v:
-            existing_payload = v
-            break
 
-    existing_rsp_name = ""
-    for k in ["rsp", "response_file", "response_file_name", "rsp_name", "rspFile"]:
-        v = proj_obj.get(k) if isinstance(proj_obj, dict) else None
-        if isinstance(v, str) and v.strip():
-            existing_rsp_name = v.strip()
-            break
-
-    default_rsp_name = existing_rsp_name or f"{project}.rsp"
+    rsp_value = proj_obj.get("rsp")
+    default_rsp_name = rsp_value.strip() if isinstance(rsp_value, str) and rsp_value.strip() else f"{project}.rsp"
     if _blank(st.session_state.get("runjob_rsp")):
         st.session_state["runjob_rsp"] = default_rsp_name
 
     auto_base = f"{project}_{run_type.lower()}"
     job_key = "runjob_job_name"
     st.session_state[job_key] = auto_base
-
-    seeded_key = "runjob_seeded_project"
-    if st.session_state.get(seeded_key) != project and isinstance(existing_payload, dict):
-        RF_TO_STATE = {
-            "sourcedb": "runjob_sourcedb",
-            "sourcenode": "runjob_sourcenode",
-            "srcauth": "runjob_srcauth",
-            "srcarg1": "runjob_srcarg1",
-            "srcarg2": "runjob_srcarg2",
-            "srcarg3": "runjob_srcarg3",
-            "targetnode": "runjob_targetnode",
-            "tgtauth": "runjob_tgtauth",
-            "tgtarg1": "runjob_tgtarg1",
-            "tgtarg2": "runjob_tgtarg2",
-            "tgtarg3": "runjob_tgtarg3",
-        }
-
-        ALT_KEYS = {
-            "SOURCEDATABASE_CONNECTIONDETAILS_HOST": "runjob_sourcenode",
-            "SOURCEDATABASE_ADMINUSERNAME": "runjob_srcauth",
-            "TARGETDATABASE_ADMINUSERNAME": "runjob_tgtauth",
-        }
-
-        def _apply_map(src: Dict[str, Any], mapping: Dict[str, str]) -> None:
-            for rf_key, state_key in mapping.items():
-                if rf_key not in src:
-                    continue
-                val = src.get(rf_key)
-                if _blank(val):
-                    continue
-                if _blank(st.session_state.get(state_key)):
-                    st.session_state[state_key] = str(val)
-
-        _apply_map(existing_payload, RF_TO_STATE)
-        _apply_map(existing_payload, ALT_KEYS)
-
-        st.session_state[seeded_key] = project
 
     # Always keep RSP/job name in sync, no user edits
     st.session_state["runjob_rsp"] = default_rsp_name
@@ -1401,6 +1444,12 @@ if section == "createjob":
 
         if migration_type == "LOGICAL_OFFLINE":
             with st.expander("ZDM CLI args (Logical Offline)", expanded=True):
+                src_db_col, src_sid_col = st.columns(2)
+                with src_db_col:
+                    st.text_input("-sourcedb", key="runjob_sourcedb")
+                with src_sid_col:
+                    st.text_input("-sourcesid", key="runjob_sourcesid")
+
                 col_opt_a, col_opt_b = st.columns(2)
                 with col_opt_a:
                     st.text_input("-sourcenode", key="runjob_sourcenode")
@@ -1464,6 +1513,7 @@ if section == "createjob":
             "rsp": (st.session_state.get("runjob_rsp") or "").strip() or None,
             "run_type": st.session_state.get("runjob_run_type"),
             "sourcedb": st.session_state.get("runjob_sourcedb") or None,
+            "sourcesid": st.session_state.get("runjob_sourcesid") or None,
             "sourcenode": st.session_state.get("runjob_sourcenode") or None,
             "srcauth": st.session_state.get("runjob_srcauth") or None,
             "srcarg1": st.session_state.get("runjob_srcarg1") or None,
@@ -1484,6 +1534,9 @@ if section == "createjob":
             "listphases": listphases,
             "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
         }
+        for key in ("sourcedb", "sourcesid"):
+            if not payload_save.get(key):
+                payload_save.pop(key, None)
         resp_save = api_request("post", "/jobsaved", api_base, auth, payload=payload_save)
         if resp_save:
             st.success(f"Saved job '{payload_save['name']}'.")
@@ -1501,6 +1554,8 @@ if section == "createjob":
                 "project": project,
                 "run_type": run_type,
                 "rsp": rsp_name,
+                "sourcedb": (st.session_state.get("runjob_sourcedb") or "").strip() or None,
+                "sourcesid": (st.session_state.get("runjob_sourcesid") or "").strip() or None,
                 "sourcenode": (st.session_state.get("runjob_sourcenode") or "").strip() or None,
                 "srcauth": (st.session_state.get("runjob_srcauth") or "").strip() or None,
                 "srcarg1": (st.session_state.get("runjob_srcarg1") or "").strip() or None,
@@ -1521,6 +1576,9 @@ if section == "createjob":
                 "listphases": listphases,
                 "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
             }
+            for key in ("sourcedb", "sourcesid"):
+                if not payload.get(key):
+                    payload.pop(key, None)
 
             data = api_request("post", "/runjob", api_base, auth, payload=payload)
             if data:
@@ -1553,6 +1611,8 @@ elif section == "runjob":
                         "project": job.get("project"),
                         "run_type": job.get("run_type") or "EVAL",
                         "rsp": job.get("rsp"),
+                        "sourcedb": job.get("sourcedb"),
+                        "sourcesid": job.get("sourcesid"),
                         "sourcenode": job.get("sourcenode"),
                         "srcauth": job.get("srcauth"),
                         "srcarg1": job.get("srcarg1"),
@@ -1573,6 +1633,9 @@ elif section == "runjob":
                         "listphases": job.get("listphases"),
                         "custom_args": job.get("custom_args"),
                     }
+                    for key in ("sourcedb", "sourcesid"):
+                        if not payload.get(key):
+                            payload.pop(key, None)
                     data = api_request("post", "/runjob", api_base, auth, payload=payload)
                     if data:
                         st.success(f"Ran saved job '{saved_sel}'")
@@ -1600,6 +1663,8 @@ elif section == "runjob":
             "project": vjob.get("project"),
             "run_type": vjob.get("run_type") or "EVAL",
             "rsp": vjob.get("rsp"),
+            "sourcedb": vjob.get("sourcedb"),
+            "sourcesid": vjob.get("sourcesid"),
             "sourcenode": vjob.get("sourcenode"),
             "srcauth": vjob.get("srcauth"),
             "srcarg1": vjob.get("srcarg1"),
@@ -1621,6 +1686,9 @@ elif section == "runjob":
             "custom_args": vjob.get("custom_args"),
             "dry_run": True,
         }
+        for key in ("sourcedb", "sourcesid"):
+            if not payload_preview.get(key):
+                payload_preview.pop(key, None)
         cmd_resp = api_request("post", "/runjob", api_base, auth, payload=payload_preview, quiet=False)
         if cmd_resp and isinstance(cmd_resp, dict) and cmd_resp.get("status") in ("planned", "success"):
             cmd_lines = cmd_resp.get("command")
@@ -2070,6 +2138,15 @@ elif section == "discovery":
             "streams_pool_hint": streams_hint,
         }
 
+    def cloud_identity_record(raw: Any) -> Dict[str, Any]:
+        rows = raw if isinstance(raw, list) else [raw]
+
+        for row in rows:
+            if isinstance(row, dict) and "error" not in row and row.get("DATABASE_OCID"):
+                return row
+
+        return {}
+
     run_disc = st.button("Run discovery", type="primary")
 
     # -------- snapshot sourcing (cached from backend or freshly run) --------
@@ -2164,7 +2241,15 @@ elif section == "discovery":
             if chips:
                 st.markdown(" ".join([f"`{c}`" for c in chips]))
 
-        tabs = st.tabs(["Readiness", "Summary", "Schemas", "Tablespaces", "Directories", "NLS & TZ", "Raw JSON"])
+        cloud_identity = cloud_identity_record(snapshot.get("cloud_identity"))
+
+        tab_names = ["Readiness", "Summary", "Schemas", "Tablespaces", "Directories", "NLS & TZ"]
+        cloud_tab_idx = None
+        if cloud_identity:
+            cloud_tab_idx = len(tab_names)
+            tab_names.append("Cloud Identity")
+        tab_names.append("Raw JSON")
+        tabs = st.tabs(tab_names)
 
         with tabs[0]:
             checks = normalized.get("readiness_checks") or []
@@ -2242,5 +2327,28 @@ elif section == "discovery":
             if not nls and not tz:
                 st.info("No NLS/TZ data.")
 
-        with tabs[6]:
+        if cloud_tab_idx is not None:
+            with tabs[cloud_tab_idx]:
+                st.markdown("### Cloud Identity")
+                cloud_grid_rows = [
+                    {"Field": "Database Name", "Value": cloud_identity.get("DATABASE_NAME")},
+                    {"Field": "Region", "Value": cloud_identity.get("REGION")},
+                    {"Field": "Tenant OCID", "Value": cloud_identity.get("TENANT_OCID")},
+                    {"Field": "Database OCID", "Value": cloud_identity.get("DATABASE_OCID")},
+                    {"Field": "Compartment OCID", "Value": cloud_identity.get("COMPARTMENT_OCID")},
+                    {"Field": "Outbound IP Address", "Value": cloud_identity.get("OUTBOUND_IP_ADDRESS")},
+                    {"Field": "Public Domain Name", "Value": cloud_identity.get("PUBLIC_DOMAIN_NAME")},
+                    {"Field": "Autoscalable Storage", "Value": cloud_identity.get("AUTOSCALABLE_STORAGE")},
+                    {"Field": "Base Size", "Value": cloud_identity.get("BASE_SIZE")},
+                    {"Field": "Infrastructure", "Value": cloud_identity.get("INFRASTRUCTURE")},
+                    {"Field": "Service", "Value": cloud_identity.get("SERVICE")},
+                    {"Field": "Applications", "Value": cloud_identity.get("APPLICATIONS")},
+                    {"Field": "Compute Model", "Value": cloud_identity.get("COMPUTE_MODEL")},
+                    {"Field": "Compute Count", "Value": cloud_identity.get("COMPUTE_COUNT")},
+                    {"Field": "Compute Autoscaling", "Value": cloud_identity.get("COMPUTE_AUTOSCALING")},
+                ]
+                cloud_grid = pd.DataFrame(cloud_grid_rows)
+                st_df_safe(cloud_grid, hide_index=True, width='stretch')
+
+        with tabs[-1]:
             st.json(snapshot, expanded=False)
