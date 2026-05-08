@@ -14,23 +14,6 @@ except ImportError:
     from backend_auth import first_user_defaults  # script-style
 
 
-# Wrapper to avoid Arrow type errors from mixed object columns.
-def st_df_safe(df: pd.DataFrame, **kwargs):
-    # Coerce to DataFrame if caller passed list/dict/etc.
-    if not isinstance(df, pd.DataFrame):
-        df = pd.DataFrame(df)
-    try:
-        return st.dataframe(df, **kwargs)
-    except Exception:
-        df2 = df.copy()
-        for col in df2.columns:
-            if df2[col].dtype == object:
-                df2[col] = df2[col].apply(
-                    lambda v: v.decode() if isinstance(v, (bytes, bytearray)) else v
-                ).astype(str)
-        return st.dataframe(df2, **kwargs)
-
-
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -145,27 +128,30 @@ def generate_rsp_lines(preview_payload: Dict[str, Any]) -> List[str]:
     return out
 
 
+def load_local_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 def get_projects_list(api_base: str, auth: HTTPBasicAuth) -> Dict[str, Any]:
     proj = api_request("get", "/projects", api_base, auth, quiet=True) or {}
-    return proj if isinstance(proj, dict) else {}
+    if isinstance(proj, dict) and proj:
+        return proj
+    local = load_local_json(Path(__file__).resolve().parent / "projects.json")
+    return local if isinstance(local, dict) else {}
 
 
-def ping_backend(api_base: str, auth: HTTPBasicAuth) -> Tuple[bool, str, Optional[Dict[str, Any]], Optional[str]]:
-    """Try health/version endpoints and return success plus last error detail."""
-    last_error: Optional[str] = None
+def ping_backend(api_base: str, auth: HTTPBasicAuth) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
     for ep in ["/health", "/version"]:
-        url = f"{api_base}{ep}"
-        try:
-            resp = requests.get(url, auth=auth, timeout=8)
-            resp.raise_for_status()
-            try:
-                return True, ep, resp.json(), None
-            except ValueError:
-                return True, ep, {"raw": resp.text}, None
-        except requests.RequestException as exc:
-            last_error = str(exc)
-            continue
-    return False, "", None, last_error
+        data = api_request("get", ep, api_base, auth, quiet=True, timeout=8)
+        if data is not None:
+            return True, ep, data
+    return False, "", None
 
 
 def is_blank(v: Any) -> bool:
@@ -227,8 +213,7 @@ st.caption("A lightweight UI on top of ZDM CLI via your FastAPI microservice.")
 # -----------------------------
 # Defaults / session state
 # -----------------------------
-# Use hostname matching the certificate CN (localhost) to avoid TLS hostname errors.
-default_base = os.getenv("API_BASE_URL", f"https://localhost:{os.getenv('ZEUS_PORT', '8001')}").rstrip("/")
+default_base = os.getenv("API_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 def _load_zeus_auth_defaults() -> Tuple[str, str]:
     """Read first user/pass from auth helper."""
     return first_user_defaults()
@@ -273,9 +258,6 @@ with st.sidebar:
     st.caption(f"User: {st.session_state.get('username','') or 'not set'}")
 
 section = nav_options.get(nav_choice, "settings")
-previous_section = st.session_state.get("_active_section")
-entering_response = section == "response" and previous_section != "response"
-st.session_state["_active_section"] = section
 
 if section != "settings" and not api_base:
     st.warning("Please configure Backend Connection first.")
@@ -306,17 +288,12 @@ if section == "settings":
     with right:
         st.markdown("### Backend Status")
         if st.button("Ping backend", type="primary"):
-            ok, used, data, err = ping_backend(api_base, auth)
+            ok, used, data = ping_backend(api_base, auth)
             if ok:
                 st.success(f"Backend reachable via `{used}`")
                 st.json(data)
             else:
-                st.error(
-                    "Backend unreachable. Check API_BASE_URL and TLS trust. "
-                    "If using self-signed cert, set REQUESTS_CA_BUNDLE to zeus.crt."
-                )
-                if err:
-                    st.caption(f"Ping detail: {err}")
+                st.error("Ping failed. Please implement `/health` or `/version` on backend.")
 
 
 
@@ -449,7 +426,7 @@ elif section == "connections":
             edited = st.data_editor(
                 df_orig,
                 hide_index=True,
-                width='stretch',
+                use_container_width=True,
                 column_config={
                     "Name": st.column_config.TextColumn(disabled=True),
                     "TLS Wallet dir": st.column_config.TextColumn(disabled=True),
@@ -462,7 +439,7 @@ elif section == "connections":
 
             col_save, col_delete = st.columns([0.55, 0.45])
             with col_save:
-                if st.button("Save edits", type="primary", width='stretch'):
+                if st.button("Save edits", type="primary", use_container_width=True):
                     updated = 0
                     for idx, row in edited.iterrows():
                         orig = df_orig.iloc[idx]
@@ -487,7 +464,7 @@ elif section == "connections":
                     else:
                         st.success(f"Saved {updated} changed connection{'s' if updated != 1 else ''}.")
             with col_delete:
-                if st.button("Delete checked", type="secondary", width='stretch'):
+                if st.button("Delete checked", type="secondary", use_container_width=True):
                     to_delete = [row["Name"] for _, row in edited.iterrows() if row.get("Delete?", False)]
                     if not to_delete:
                         st.info("No connections selected for deletion.")
@@ -512,18 +489,21 @@ elif section == "connections":
             if test_name == "-- Select --":
                 st.error("Please select a connection.")
             else:
-                cinfo = conns.get(test_name, {})
-                wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get("allow_tls_without_wallet")
-                if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
-                    st.error("Upload a TLS wallet for this connection before testing.")
-                    st.stop()
-                if not temp_password:
-                    st.error("Enter the DB password to test this connection.")
-                    st.stop()
                 payload = {
                     "name": test_name,
-                    "password": temp_password,
+                    "password": temp_password or None,
                 }
+                cinfo = conns.get(test_name, {})
+                wallet_required = cinfo.get("use_tcps") and not cinfo.get("allow_tls_without_wallet")
+                if wallet_required:
+                    if cinfo.get("tls_wallet_uploaded_dir"):
+                        payload["use_uploaded_tls_wallet"] = True
+                    else:
+                        st.error("Upload a TLS wallet for this connection before testing.")
+                        st.stop()
+                if not payload.get("use_uploaded_tls_wallet") and not payload["password"]:
+                    st.error("Enter the DB password to test this connection.")
+                    st.stop()
                 data = api_request("post", "/dbconnection/test", api_base, auth, payload=payload)
                 if data:
                     st.success(data.get("message", "Test succeeded"))
@@ -537,7 +517,7 @@ elif section == "projects":
     st.subheader("Projects")
     st.caption("A Project groups source & target connections; its name is also used as the response filename.")
 
-    connections_cache = api_request("get", "/dbconnections", api_base, auth, quiet=True) or {}
+    connections_cache = load_local_json(Path(__file__).resolve().parent / "db_connections.json")
     conn_names = ["-- Select connection --"] + list(connections_cache.keys())
 
     with st.form("save_project"):
@@ -569,21 +549,6 @@ elif section == "projects":
 # Response Files (Productized, REAL-TIME, CONDITIONAL UI)
 # -----------------------------
 elif section == "response":
-    def clear_response_form_state(include_project: bool = False):
-        keep_response_keys = set() if include_project else {"rf_project", "rf_active_project"}
-        for key in list(st.session_state.keys()):
-            if key.startswith("rf_") and key not in keep_response_keys:
-                st.session_state.pop(key, None)
-        st.session_state["rf_form_loaded_project"] = ""
-        st.session_state["rf_use_manual"] = False
-        st.session_state["rf_manual_text"] = ""
-        if include_project:
-            st.session_state["rf_project"] = "-- Select project --"
-            st.session_state["rf_active_project"] = ""
-
-    if entering_response:
-        clear_response_form_state(include_project=True)
-
     header_l, header_r = st.columns([4.5, 1.5], vertical_alignment="center")
     with header_l:
         st.markdown("## Response Files")
@@ -598,14 +563,9 @@ elif section == "response":
         )
 
 
-    if project == "-- Select project --":
-        st.session_state["rf_active_project"] = ""
-        st.info("Select a project to start.")
-        st.stop()
-
-    if st.session_state.get("rf_active_project") != project:
-        st.session_state["rf_active_project"] = project
-        st.session_state["rf_form_loaded_project"] = ""
+    # if project == "-- Select project --":
+    #     st.info("Select a project to start.")
+    #     st.stop()
 
     # options
     dbtype_options = {
@@ -626,6 +586,19 @@ elif section == "response":
         "Physical": ["OSS", "EXTBACKUP", "ZDLRA", "NFS", "DIRECT"],
         "Hybrid": ["NFS"],
     }
+    online_physical_map = {
+        "VMDB": ["OSS","DIRECT"],
+        "EXACS": ["OSS","DIRECT"],
+        "EXACC": ["OSS","EXTBACKUP","ZDLRA","NFS","DIRECT"],
+        "NON_CLOUD": ["DIRECT"],
+    }
+    offline_physical_map = {
+        "VMDB": ["OSS"],
+        "EXACS": ["OSS"],
+        "EXACC": ["OSS","NFS"],
+        "NON_CLOUD": ["OSS"],
+    }
+    
     disallowed_methods = {"ONLINE_LOGICAL", "OFFLINE_XTTS"}
 
     # wallets cache
@@ -680,10 +653,8 @@ elif section == "response":
         return parsed
 
     def apply_rsp_to_state(project_name: str):
-        clear_response_form_state()
         rsp_resp = api_request("get", f"/responsefile/{project_name}", api_base, auth, quiet=True)
         if not (isinstance(rsp_resp, dict) and rsp_resp.get("status") == "success"):
-            st.session_state["rf_form_loaded_project"] = project_name
             return
         content = rsp_resp.get("content", "")
         parsed = parse_rsp_content(content)
@@ -706,6 +677,8 @@ elif section == "response":
             "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME": "rf_export_dir_name",
             "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH": "rf_export_dir_path",
             "TABLESPACEDETAILS_AUTOREMAP": "rf_autoremap",
+            "TABLESPACEDETAILS_REMAPTARGET": "rf_remap_target",
+            "TABLESPACEDETAILS_REMAPTEMPTARGET": "rf_remap_temp_target",
             "DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME": "rf_bucket_ns",
             "DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME": "rf_bucket_name",
             "OCIAUTHENTICATIONDETAILS_REGIONID": "rf_oci_region",
@@ -769,83 +742,13 @@ elif section == "response":
         if "rf_expand_all" not in st.session_state:
             st.session_state["rf_expand_all"] = False
         with row_b1:
-            if st.button("Expand", key="rf_expand_all_btn", width='stretch'):
+            if st.button("Expand", key="rf_expand_all_btn", use_container_width=True):
                 st.session_state["rf_expand_all"] = True
         with row_b2:
-            if st.button("Collapse", key="rf_collapse_all_btn", width='stretch'):
+            if st.button("Collapse", key="rf_collapse_all_btn", use_container_width=True):
                 st.session_state["rf_expand_all"] = False
 
         expand_all = st.session_state.get("rf_expand_all", False)
-
-        # ---- Migration basics
-        st.markdown("#### Basics")
-        migration_type = st.selectbox("Migration type", migration_type_options, key="rf_migration_type", help=param_help("MIGRATION_TYPE"))
-
-        method_opts = method_options_map.get(migration_type, [])
-        default_method = method_opts[0] if method_opts else ""
-        migration_method = st.selectbox("Migration method", method_opts, key="rf_migration_method", help=param_help("MIGRATION_METHOD"))
-
-        if migration_method in disallowed_methods:
-            st.warning(f"{migration_method} is not selectable yet; using {default_method}.")
-            migration_method = default_method
-
-        selected_migration_method = str(migration_method or "").strip().upper()
-        copy_candidates = []
-        if isinstance(projects_resp, dict) and selected_migration_method:
-            for candidate_name, candidate_project in projects_resp.items():
-                if candidate_name == project or not isinstance(candidate_project, dict):
-                    continue
-                candidate_method = str(candidate_project.get("migration_method") or "").strip().upper()
-                if candidate_method == selected_migration_method:
-                    copy_candidates.append(candidate_name)
-
-        if copy_candidates:
-            copy_source_options = ["-- Select project --"] + copy_candidates
-            if st.session_state.get("rf_copy_source_project") not in copy_source_options:
-                st.session_state["rf_copy_source_project"] = copy_source_options[0]
-
-            copy_col_source, copy_col_action = st.columns([3, 1], vertical_alignment="bottom")
-            with copy_col_source:
-                copy_source_project = st.selectbox(
-                    "Copy values from project",
-                    copy_source_options,
-                    key="rf_copy_source_project",
-                )
-            with copy_col_action:
-                copy_clicked = st.button(
-                    "Copy values",
-                    key="rf_copy_values_btn",
-                    disabled=copy_source_project == "-- Select project --",
-                    width='stretch',
-                )
-
-            if copy_clicked:
-                copy_payload = {
-                    "source_project": copy_source_project,
-                    "target_project": project,
-                    "migration_method": selected_migration_method,
-                }
-                copy_resp = api_request("post", "/responsefile/copy", api_base, auth, payload=copy_payload)
-                if copy_resp:
-                    st.session_state["rf_use_manual"] = False
-                    st.session_state["rf_manual_text"] = ""
-                    st.session_state.pop("rf_remap_table", None)
-                    st.session_state.pop("rf_additional_table", None)
-                    st.session_state["rf_form_loaded_project"] = ""
-                    st.rerun()
-        else:
-            st.caption("No same-method source projects available.")
-
-        medium_options = medium_options_map.get(migration_type, ["OSS"])
-        if st.session_state.get("rf_medium") not in medium_options:
-            st.session_state["rf_medium"] = medium_options[0]
-
-        medium = st.selectbox("Data transfer medium", medium_options, key="rf_medium", help=param_help("DATA_TRANSFER_MEDIUM"))
-
-        medium_upper = (medium or "").upper()
-        is_oss = medium_upper == "OSS"
-
-        st.divider()
 
         # ---- Target / Source (collapsible; keep variables initialized for preview builder)
         expand_all = st.session_state.get("rf_expand_all", False)
@@ -861,6 +764,59 @@ elif section == "response":
         src_port = 1521
         src_service = ""
         wallet_source_path = ""
+
+        # ---- Migration basics
+        st.markdown("#### Basics")
+        migration_type = st.selectbox("Migration type", migration_type_options, key="rf_migration_type", help=param_help("MIGRATION_TYPE"))
+
+        method_opts = method_options_map.get(migration_type, [])
+        default_method = method_opts[0] if method_opts else ""
+        migration_method = st.selectbox("Migration method", method_opts, key="rf_migration_method", help=param_help("MIGRATION_METHOD"))
+
+        if migration_method in disallowed_methods:
+            st.warning(f"{migration_method} is not selectable yet; using {default_method}.")
+            migration_method = default_method
+
+        st.caption("Physical migrations use platform settings rather than ADB target/source connection fields here.")
+        target_platform = st.selectbox(field_label("Platform type", True), platform_type_options, key="rf_platform_type", help=param_help("PLATFORM_TYPE"))
+
+        if migration_method == "ONLINE_PHYSICAL":
+            medium_options = online_physical_map.get(target_platform)
+        elif migration_method == "OFFLINE_PHYSICAL":
+            medium_options = offline_physical_map.get(target_platform)
+        else:
+            medium_options = medium_options_map.get(migration_type, ["OSS"])
+            if st.session_state.get("rf_medium") not in medium_options:
+                st.session_state["rf_medium"] = medium_options[0]
+
+        medium = st.selectbox("Data transfer medium", medium_options, key="rf_medium", help=param_help("DATA_TRANSFER_MEDIUM"))
+
+        # if migration_method == "PHYSICAL_ONLINE"
+        #     if
+        # if migration_method == "PHYSICAL_ONLINE" and target_platform in ['VMDB','EXACS']:
+        #     medium = st.selectbox("Data transfer medium", medium_options, key="rf_medium", help=param_help("DATA_TRANSFER_MEDIUM"))
+        
+
+
+        medium_upper = (medium or "").upper()
+        is_oss = medium_upper == "OSS"
+
+        st.divider()
+
+        # ---- Target / Source (collapsible; keep variables initialized for preview builder)
+        expand_all = st.session_state.get("rf_expand_all", False)
+
+    #    # target_platform = None
+    #     target_ocid = ""
+    #     target_dbtype = None
+    #     target_admin = ""
+    #     target_service = ""
+    #     wallet_target_path = ""
+    #     src_admin = ""
+    #     src_host = ""
+    #     src_port = 1521
+    #     src_service = ""
+    #     wallet_source_path = ""
 
         with st.expander("Source & Target ", expanded=expand_all):
             if migration_type == "Logical":
@@ -938,11 +894,417 @@ elif section == "response":
                     wallet_target_path = wallet_map.get(wallet_target_name, "") if wallet_target_name != "-- Select wallet --" else ""
 
             elif migration_type == "Physical":
-                st.caption("Physical migrations use platform settings rather than ADB target/source connection fields here.")
-                target_platform = st.selectbox(field_label("Platform type", True), platform_type_options, key="rf_platform_type", help=param_help("PLATFORM_TYPE"))
+                tab_src, tab_tgt = st.tabs(["Source database", "Target database"])
+                
+                with tab_src:
+                    def inp_srcdbsid():    
+                        srcdbsid = st.text_input("Enter the source database ORACLE_SID:",placeholder="Source ORACLE_SID")
+                        if srcdbsid:
+                            st.info(f"Source DB SID: {srcdbsid}")
+                            st.session_state.srcdb_prm = f"-sourcesid {srcdbsid}"
+                        return     
 
-            else:  # Hybrid
-                target_dbtype = st.selectbox(field_label("Target DB type", True), dbtype_options["Hybrid"], key="rf_hybrid_dbtype", help=param_help("TARGETDATABASE_DBTYPE"))
+                    def inp_srcdbunqname():
+                        if "srcdb_prm" not in st.session_state:
+                            st.session_state.srcdb_prm = ""
+                            return
+                        srcdb = st.text_input("Enter the source database DB_UNIQUE_NAME:",placeholder="Source DB_UNIQUE_NAME")
+                        if srcdb:
+                            st.info(f"Source DB_UNIQUE_NAME : {srcdb}")
+                            st.session_state.srcdb_prm = f"-sourcedb {srcdb}"
+                        return
+
+                    def upd_srcdb_prm():
+                        srcdb_prm = st.session_state.get("srcdb", "")
+                        st.session_state.srcdb_prm = f"-sourcedb {srcdb_prm}" if srcdb_prm else "" 
+
+                    def sisrc():
+                        sicw = st.radio("Is it managed by Clusterware?",
+                                ['Yes','No'],
+                                index=None,
+                                horizontal=True
+                                )
+                        if sicw == 'No':
+                            inp_srcdbsid()
+                            return 
+                        elif sicw == 'Yes':
+                            inp_srcdbunqname()
+                            return
+
+                    with st.expander("Source Database Type"):
+                        srcdbtype = st.radio("Select the source database type",['Single Instance','RAC'],index=None, horizontal=True)
+                        if srcdbtype == 'Single Instance':
+                            sisrc()
+                        elif srcdbtype == 'RAC':
+                            inp_srcdbunqname()
+
+                    if "srcdbhost_prm" not in st.session_state:
+                        st.session_state.srcdbhost_prm = ""
+                    
+                    with st.expander("Source Database Host"):
+                        srcdbhost = st.text_input("Enter the source database hostname:",placeholder="Source hostname")
+                        if srcdbhost:
+                            st.info(f"Source hostname: {srcdbhost}")
+                            st.session_state.srcdbhost_prm = f"{srcdbhost}"
+                        st.warning("NOTE: If the source is a cluster database, provide only one node name")
+                    
+                    if "srcauth_prm" not in st.session_state:
+                        st.session_state.srcauth_prm = ""
+                    if "srcuser_prm" not in st.session_state:
+                        st.session_state.srcuser_prm = ""
+
+                    def inp_srcuser():
+                        st.session_state.srcuser_prm = f"{srcuser}"
+                        st.info(f"Source username: {st.session_state.srcuser_prm}")
+
+                    # SRC3 - Main
+                    with st.expander("Source Database Authentication"):
+                        srcauth = st.radio("Select the source database server authentication method",
+                        ['root/opc/sudo authentication (zdmauth)','Oracle software owner (dbuser)'],
+                        index=None
+                        )
+                    if srcauth == 'root/opc/sudo authentication (zdmauth)':
+                        st.session_state.srcauth_prm = "zdmauth"
+                        srcuser = st.text_input("Enter the username with root/sudo access:",placeholder="eg. root")
+                        if srcuser:
+                            inp_srcuser()
+                    elif srcauth == 'Oracle software owner (dbuser)':   
+                        st.session_state.srcauth_prm = "dbuser"
+                        srcuser = st.text_input("Enter the source Oracle software owner username:",placeholder="eg. oracle")
+                        if srcuser:
+                            inp_srcuser()
+
+                        srcssh = st.text_input("Enter the path on the ZDM server of the user account's SSH private key for the source database server:",placeholder="eg. /home/zdmuser/src/wallet/id_rsa")
+                        if srcssh:
+                            st.info(f"Local path: {srcssh}")
+
+                        srcsudo = st.text_input("Enter the path for the sudo location path on the source database server:",placeholder="eg. /usr/bin/sudo")
+                        if srcsudo:
+                            st.info(f"Local path:,{srcsudo}")
+
+                        srcsyskey = st.text_input("Enter the path on the ZDM server of the auto-login wallet for the SYS user of the source database:",placeholder="eg. /home/zdmuser/src/wallet/sys/")
+                        if srcssh:
+                            st.info(f"Local path: {srcsyskey}")
+
+                        srctdekey = st.text_input("Enter the path on the ZDM server of the auto-login wallet for the TDE keystore of the source database:",placeholder="eg. /home/zdmuser/src/wallet/tde/")
+                        if srcssh:
+                            st.info("Local path: {srctdekey}")
+                        st.warning("NOTE: If no wallet paths are provided, you will be prompted when executing zdmcli to enter the relevant passwords")
+                
+                with tab_tgt:
+                    # TGT1 - States
+                    if "tgtdbhost_prm" not in st.session_state:
+                        st.session_state.tgtdbhost_prm = ""
+                    # TGT - Functions
+                    # Check on source if this function is still needed
+                    # def inp_hostname():
+                    #     tgtdbhost = st.text_input("Enter the target database hostname:",placeholder="Target hostname")
+
+                    # TGT1 - Main
+                    with st.expander("Target Database Host"):
+                        tgtdbhost = st.text_input("Enter the target database hostname:",placeholder="Target hostname")
+                        if tgtdbhost:
+                            st.info(f"Target hostname: {tgtdbhost}")
+                            st.session_state.tgtdbhost_prm = f"{tgtdbhost}"
+                        st.warning("NOTE: If the source is a cluster database, provide only one node name")
+
+                    # TGT2 - Target Database Authentication Method
+
+                    # TGT2 - States
+                    if "tgtauth_prm" not in st.session_state:
+                        st.session_state.tgtauth_prm = ""
+                    if "tgtuser_prm" not in st.session_state:
+                        st.session_state.tgtuser_prm = ""
+
+                    # TGT2 - Functions
+                    def inp_tgtuser():
+                        st.session_state.tgtuser_prm = f"{tgtuser}"
+                        st.info(f"Target username: {st.session_state.tgtuser_prm}")
+
+                    with st.expander("Target Database Authentication"):
+                        tgtauth = st.radio("Select the target database server authentication method",
+                                        ['root/opc/sudo authentication (zdmauth)','Oracle software owner (dbuser)'],
+                                        index=None
+                                        )
+                        if tgtauth == 'root/opc/sudo authentication (zdmauth)':
+                            st.session_state.tgtauth_prm = "zdmauth"
+                            tgtuser = st.text_input("Enter the username with root/sudo access:",placeholder="eg. opc")
+                            if tgtuser:
+                                inp_tgtuser()
+                        elif tgtauth == 'Oracle software owner (dbuser)':   
+                            st.session_state.tgtauth_prm = "dbuser" 
+                            tgtuser = st.text_input("Enter the target Oracle software owner username:",placeholder="eg. oracle")
+                            if tgtuser:
+                                inp_tgtuser()              
+                        tgtssh = st.text_input("Enter the path on the ZDM server of the SSH private key for the target database server:",placeholder="eg. /user/opc/.ssh/id_rsa")
+                        if tgtssh:
+                            st.info(f"Local path: {tgtssh}")
+                        tgtsudo = st.text_input("Enter the path for the sudo location path on the target database server:",placeholder="eg. /usr/bin/sudo")
+                        if tgtsudo:
+                            st.info(f"Local path: {tgtsudo}")
+
+        st.divider()
+
+        if migration_type == "Physical":
+            # TGT3 - Main
+            with st.expander("Target Database Name"):
+                tgtdbunq = st.text_input("Enter the target database DB_UNIQUE_NAME:",placeholder="eg. DBTGT")
+                if tgtdbunq:
+                    tgtdbunq_rsp = f"TGT_DB_UNIQUE_NAME={tgtdbunq}"
+                    st.success(tgtdbunq_rsp)
+
+            # TGT4 - Migration Method and Platform
+
+            # TGT4 - Session States and variables
+
+            # TGT4 - Functions
+            def migoss():
+                st.session_state.ossreg = st.text_input("Enter the OCI Object storage region:",placeholder="eg. ap-sydney-1")
+                st.session_state.ossnsp = st.text_input("Enter the OCI Object storage namespace:",placeholder="OCI namespace")
+                st.session_state.ossbck = st.text_input("Enter the OCI Object storage bucket name:",placeholder="OCI OSS bucket name")
+                if st.session_state.ossreg and st.session_state.ossnsp and st.session_state.ossbck:
+                    st.session_state.oss_url_rsp = f"https://swiftobjectstorage.{st.session_state.ossreg}.oraclecloud.com/{st.session_state.ossnsp}"
+                    st.success(f"The OSS URL is: {st.session_state.oss_url_rsp}")
+                migbko()
+
+            def migbck():
+                bckloc = st.text_input("Enter the backup accessible at both source and target:", placeholder="eg. /nfs/db/backups/")
+                if bckloc:
+                    st.session_state.bckloc_rsp = f"BACKUP_PATH={bckloc}"
+                    st.success(f"{st.session_state.bckloc_rsp}")
+                else:
+                    st.error("Backup location required")
+                migbko()
+
+            def migbko():
+                exbck = st.radio("Use existing backup for restoration source?", ("Yes","No"), index=None)
+                if exbck:
+                    if exbck == "Yes":
+                        st.session_state.exbck_rsp = f"ZDM_USE_EXISTING_BACKUP=TRUE"
+                        st.success(f"{st.session_state.exbck_rsp}")
+                        extag = st.text_input("Provide the existing RMAN backup tag to be used: ", placeholder="TAGnnnnnnnn")
+                        if extag:
+                            st.session_state.extag_rsp = f"ZDM_BACKUP_TAG={extag}"
+                            st.success(f"{st.session_state.extag_rsp}")
+                        else:
+                            st.error("Existing backup tag required")
+                    else:
+                        st.session_state.exbck_rsp = f"ZDM_USE_EXISTING_BACKUP=FALSE"
+                        st.success(f"{st.session_state.exbck_rsp}")
+                        extag = st.text_input("Provide a name for the RMAN backup tag to be used: ", placeholder="Default if empty")
+                        if extag:
+                            st.session_state.extag_rsp = f"ZDM_BACKUP_TAG={extag}"
+                            st.success(f"{st.session_state.extag_rsp}")
+                        else:
+                            st.text("Default name will be used for the backup tag")           
+
+            def migzdlra():
+                rawsrc = st.text_input("Enter path for the ZDLRA wallet location on the source:",placeholder="eg. /path/to/wallet/")
+                if rawsrc:
+                    st.session_state.rawsrc_rsp = f"SRC_ZDLRA_WALLET_LOC={rawsrc}"
+                    st.success(f"{st.session_state.rawsrc_rsp}")
+                else:
+                    st.error("Source wallet location required")    
+                rawtgt = st.text_input("Enter path for the ZDLRA wallet location on the target:", placeholder="eg. /path/to/wallet")
+                if rawtgt:
+                    st.session_state.rawtgt_rsp = f"SRC_ZDLRA_WALLET_LOC={rawtgt}"
+                    st.success(f"{st.session_state.rawtgt_rsp}")
+                else:
+                    st.error("Target wallet location required")   
+                rawcrd = st.text_input("Enter ZDLRA credentials alias:", placeholder="eg. <zdlra:scan>:<listener_port>/zdlra9:dedicated:")
+                if rawcrd:
+                    st.session_state.rawcrd_rsp = f"SRC_ZDLRA_WALLET_LOC={rawcrd}"
+                    st.success(f"{st.session_state.rawcrd_rsp}")
+                else:
+                    st.error("ZDLRA credentials required ")   
+
+            def migrman():
+                st.markdown("**Direct Transfer Options**")
+                rman_method = st.radio(
+                    "Choose RMAN transfer method",
+                    ("Restore from service (12.1 and later)", "Active duplicate (11gR2 and later)"),
+                    index=None,
+                    horizontal=True
+                )
+
+                if rman_method:
+                    if rman_method == "Restore from service (12.1 and later)":
+                        st.session_state.rman_rsp = "RESTORE_FROM_SERVICE"
+                    else:
+                        st.session_state.rman_rsp = "ACTIVE_DUPLICATE"
+
+                dg_broker = st.radio("Use Data Guard Broker?", ("Yes", "No"), index=None, horizontal=True)
+                if dg_broker:
+                    if dg_broker == "Yes":
+                        st.session_state.dg_broker_rsp = "TRUE"
+                    else:
+                        st.session_state.dg_broker_rsp = "FALSE"
+
+                dg_pause = st.radio("Pause ZDM job after Data Guard sync?", ("Yes", "No"), index=None, horizontal=True)
+                if dg_pause:
+                    if dg_pause == "Yes":
+                        st.session_state.dg_pause_prm = "-pauseafter ZDM_CONFIGURE_DG_SRC"
+
+                exist_standby = st.radio("Use existing standby as the restoration source?", ("Yes", "No"), index=None, horizontal=True)
+                if exist_standby:
+                    if exist_standby == "Yes":
+                        st.session_state.exist_standby_rsp = "TRUE"
+                        conn_str = st.text_input(
+                            "Provide the connection string for the standby database:",placeholder="Leave empty to query from LOG_ARCHIVE_DEST_n)"
+                        )
+                        if conn_str:
+                            conn_rsp = f"ZDM_STANDBY_DB_CONNECT_STRING={conn_str}"
+                        # else:
+                        #     st.info("Connection parameters will be queried from LOG_ARCHIVE_DEST_n parameters")
+                    else:
+                        exist_standby_rsp = "FALSE"
+
+                # RMAN section size
+                rman_secsize = st.text_input("Specify RMAN section size. Default is 64G. Format: <integer>{K|M|G|T}", value="64G")
+                if rman_secsize:
+                    st.session_state.secsize_rsp = rman_secsize
+                else:
+                    st.session_state.secsize_rsp = "64G"
+
+                # RMAN source channels
+                rman_src_ch = st.text_input("Specify number of source RMAN channels:", value=10)
+                if rman_src_ch:
+                    st.session_state.src_ch_rsp = rman_src_ch
+                else:
+                    st.session_state.src_ch_rsp = "10"
+
+                # RMAN target channels
+                rman_tgt_ch = st.text_input("Specify number of target RMAN channels:", value=10)
+                if rman_tgt_ch:
+                    st.session_state.tgt_ch_rsp = rman_tgt_ch
+                else:
+                    st.session_state.tgt_ch_rsp = "10"
+
+                # Remove Data Guard parameters after switchover
+                dg_cleanup = st.radio("Remove Data Guard parameters after switchover?", ("Yes", "No"), index=None)
+                st.markdown("*(NOTE: If 'Yes' is specified, this will also remove any existing Data Guard configurations on the source)*")
+                if dg_cleanup:
+                    if dg_cleanup == "Yes":
+                        st.session_state.cleanup_rsp = "FALSE"
+                    else:
+                        st.session_state.cleanup_rsp = "TRUE"
+
+            # TGT4 - Main
+
+            with st.expander("Migration Method Details"):
+
+                if medium == 'OSS':
+                    migoss()
+                elif (medium == 'NFS' or medium == 'EXTBACKUP'):
+                    migbck()
+                elif medium == 'ZDLRA':
+                    migzdlra()    
+                elif medium == 'DIRECT':
+                    migrman()  
+
+            # migmedium = None
+            # if migration_method == 'PHYSICAL_ONLINE' and medium in ['VMDB', 'EXACS']:
+            #     migmedium = st.radio("Select the migration medium:",
+            #                         ['OCI Object Storage Service','RMAN Active Duplication'],
+            #                         index=None
+            #                         )
+
+            # elif migmethod == 'Online' and migplatform in ['ExaC@C']:
+            # migmedium = st.radio("Select the migration medium:",
+            #                     ['OCI Object Storage Service','RMAN Active Duplication','NFS','External Backup','ZDLRA'],
+            #                     index=None
+            #                     )            
+
+
+
+                # # Choose target platform and methods
+                # migmethod = st.radio("Select the migration method:",['Online','Offline'],index=None)
+                # if migmethod == "Online":
+                #     migmethod_rsp = "MIGRATION_METHOD=ONLINE_PHYSICAL"
+                #     st.success(f"{migmethod_rsp}")
+                # elif migmethod == "Offline":
+                #     migmethod_rsp = "MIGRATION_METHOD=OFFLINE_PHYSICAL"
+                #     st.success(f"{migmethod_rsp}")
+                # migplatform = st.radio("Select the migration platform:",['Base Database','ExaDB-D','ExaC@C','Exadata On-Premises'],index=None)
+                # if migplatform == "Base Database":
+                #     migplatform_rsp = "MIGRATION_METHOD=VMDB"
+                #     st.success(f"{migplatform_rsp}")
+                # elif migplatform == "ExaDB-D":
+                #     migplatform_rsp = "MIGRATION_METHOD=EXACS"
+                #     st.success(f"{migplatform_rsp}")
+                # elif migplatform == "ExaC@C":
+                #     migplatform_rsp = "MIGRATION_METHOD=EXACC"
+                #     st.success(f"{migplatform_rsp}")
+                # elif migplatform == "Exadata On-Premises":
+                #     migplatform_rsp = "MIGRATION_METHOD=NON-CLOUD"
+                #     st.success(f"{migplatform_rsp}")
+
+
+                # Double check if this is true?
+                # elif migmethod == 'Online' and migplatform == 'Exadata On-Premises':
+                # elif migplatform == 'Exadata On-Premises':
+                #     st.text("RMAN Active Duplication (DIRECT) is the only supported method for On-Premises Exadata targets")
+                #     migrman()
+                # elif migmethod == 'Offline' and migplatform in ['Base Database','ExaDB-D']:
+                #     st.text("Object Storage is the only supported method for offline physical migrations to Base Database and ExaDB-D targets")
+                #     migoss()
+                # elif migmethod == 'Offline' and migplatform in ['Base Database','ExaDB-D','ExaC@C']:
+                #     migmedium = st.radio("Select the migration medium:",
+                #                         ['OCI Object Storage Service','NFS'],
+                #                         index=None
+                #                         )
+
+
+
+        st.divider()
+
+        if migration_type == "Physical":
+            # TGT5 - Additional Target Database Migration Options
+
+            # TGT5 - Main
+            with st.expander("Additional Target Database Migration Options"):
+                dbconv = st.radio("Does the source database need to be converted from non-CDB to PDB?",['Yes','No'],index=None,horizontal=True)
+                if dbconv == "Yes":
+                    pdbname = st.text_input("(Optional) Provide a name for the converted PDB: ",placeholder="Default format is ZDM_AUX_<source_dbname>")
+                    if pdbname:
+                        pdbname_rsp = pdbname
+                    # else:
+                    #     st.info("Default format of ZDM_AUX_<source_dbname> will be used")
+                    
+                    tgtcdbwallet = st.text_input("Provide the local path on the ZDM server of the auto-login wallet that contains the TDE keystore password for the target CDB:",placeholder="/local/path/to/tdewallet")
+                    if tgtcdbwallet:
+                        tgtcdbwallet_rsp = tgtcdbwallet
+                    else:
+                        st.warning("Wallet containing target CDB keystore not provided. Will need to be provided during command execution")
+                    
+                    swfo = st.radio("Do you wish to perform a failover or switchover of the source database before PDB conversion?",['Switchover','Failover'],index=None,horizontal=True)
+                    swfo_rsp = str()
+                    if swfo == 'Switchover':
+                        swfo_rsp = "TRUE"
+                    elif swfo == 'Failover':
+                        swfo_rsp = "FALSE"
+                elif dbconv == "No":
+                    dbconv_rsp= "FALSE"
+
+                dpatch = st.radio("Execute datapatch on target database server after migration to target?",['Yes','No'],index=None,horizontal=True)
+                # dpatch_rsp = None
+                if dpatch == "Yes":
+                    dpatch_rsp = "FALSE"
+                elif dpatch == "No":
+                    dpatch_rsp = "TRUE"
+
+                tzupg = st.radio("If applicable, upgrade timezone on the target database after switchover? (Note: requires downtime)",['Yes','No'],index=None,horizontal=True)
+                # tzupg_rsp = None
+                if tzupg == "Yes":
+                    tzupg_rsp = "TRUE"
+                elif tzupg == "No":
+                    tzupg_rsp = "FALSE"
+
+                # st.caption("Physical migrations use platform settings rather than ADB target/source connection fields here.")
+                # target_platform = st.selectbox(field_label("Platform type", True), platform_type_options, key="rf_platform_type", help=param_help("PLATFORM_TYPE"))
+
+        # else:  # Hybrid
+        #     target_dbtype = st.selectbox(field_label("Target DB type", True), dbtype_options["Hybrid"], key="rf_hybrid_dbtype", help=param_help("TARGETDATABASE_DBTYPE"))
 
         st.divider()
 
@@ -986,7 +1348,7 @@ elif section == "response":
 
         jobmode = metadatafirst = deletedumps = fixinvalid = ""
         export_dir_name = export_dir_path = ""
-        autoremap = ""
+        autoremap = remap_target = remap_temp_target = ""
 
         if migration_type in ["Logical", "Hybrid"]:
             st.divider()
@@ -1005,6 +1367,10 @@ elif section == "response":
 
                 with st.expander("Tablespace remap", expanded=expand_all):
                     autoremap = st.selectbox(field_label("Auto remap", True), ["TRUE", "FALSE"], index=0, key="rf_autoremap", help=param_help("TABLESPACEDETAILS_AUTOREMAP"))
+
+                    remap_target = st.text_input(field_label("Default remap target", True), value="DATA", key="rf_remap_target", help=param_help("TABLESPACEDETAILS_REMAPTARGET"))
+
+                    remap_temp_target = st.selectbox(field_label("Remap temp tablespaces", True), ["TRUE", "FALSE"], index=0, key="rf_remap_temp_target", help=param_help("TABLESPACEDETAILS_REMAPTEMPTARGET"))
 
                     st.caption("Metadata remaps (`DATAPUMPSETTINGS_METADATAREMAPS`)")
                     remap_prefill = st.session_state.pop("rf_remap_prefill", None)
@@ -1086,6 +1452,8 @@ elif section == "response":
                     "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME": export_dir_name,
                     "DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH": export_dir_path,
                     "TABLESPACEDETAILS_AUTOREMAP": autoremap,
+                    "TABLESPACEDETAILS_REMAPTARGET": remap_target,
+                    "TABLESPACEDETAILS_REMAPTEMPTARGET": remap_temp_target,
                     "include_schemas": include_schemas,
                 }
             )
@@ -1137,7 +1505,40 @@ elif section == "response":
             if is_oss:
                 preview_payload.update({"HOST": oss_host, "OPC_CONTAINER": opc_container})
                 required_items.extend([("HOST", oss_host), ("OPC_CONTAINER", opc_container)])
-
+            if medium == "DIRECT":
+                preview_payload.update(
+                    {
+                        "ZDM_RMAN_DIRECT_METHOD": st.session_state.rman_rsp,
+                        "ZDM_USE_DG_BROKER": st.session_state.dg_broker_rsp,
+                        "ZDM_USE_EXISTING_STANDBY": st.session_state.exist_standby_rsp,
+                        "ZDM_RMAN_SECTION_SIZE": st.session_state.secsize_rsp,
+                        "SRC_RMAN_CHANNELS": st.session_state.src_ch_rsp,
+                        "TGT_RMAN_CHANNELS": st.session_state.tgt_ch_rsp,
+                        "ZDM_SKIP_DG_CONFIG_CLEANUP": st.session_state.cleanup_rsp,
+                        "NONCDBTOPDB_CONVERSION": dbconv_rsp,
+                        "WALLET_TGTTDEKEYSTORE": tgtcdbwallet_rsp,
+                        "NONCDBTOPDB_SWITCHOVER": swfo_rsp,
+                        "TGT_SKIP_DATAPATCH": dpatch_rsp,
+                        "ZDM_TGT_UPGRADE_TIMEZONE": tzupg_rsp,
+                    }
+                )
+                required_items.extend(
+                    [
+                        ("ZDM_RMAN_DIRECT_METHOD", st.session_state.rman_rsp),
+                        ("ZDM_USE_DG_BROKER", st.session_state.dg_broker_rsp),
+                        ("ZDM_USE_EXISTING_STANDBY", st.session_state.exist_standby_rsp),
+                        ("ZDM_RMAN_SECTION_SIZE", st.session_state.secsize_rsp),
+                        ("SRC_RMAN_CHANNELS", st.session_state.src_ch_rsp),
+                        ("TGT_RMAN_CHANNELS", st.session_state.tgt_ch_rsp),
+                        ("ZDM_SKIP_DG_CONFIG_CLEANUP", st.session_state.cleanup_rsp),
+                        ("NONCDBTOPDB_CONVERSION", dbconv_rsp),
+                        ("WALLET_TGTTDEKEYSTORE", tgtcdbwallet_rsp),
+                        ("NONCDBTOPDB_SWITCHOVER", swfo_rsp),
+                        ("TGT_SKIP_DATAPATCH", dpatch_rsp),
+                        ("ZDM_TGT_UPGRADE_TIMEZONE", tzupg_rsp),
+                    ]
+                )
+                
         elif migration_type == "Hybrid":
             preview_payload.update({"TARGETDATABASE_DBTYPE": target_dbtype})
             required_items.append(("TARGETDATABASE_DBTYPE", target_dbtype))
@@ -1242,15 +1643,10 @@ elif section == "response":
 
 
 
-        payload_to_submit = {
-            "project": project,
-            "lines": lines_to_submit,
-            "migration_method": selected_migration_method,
-        }
-        data = api_request("post", "/WriteResponseFile", api_base, auth, payload=payload_to_submit)
-        if data:
-            st.success(data.get("message", "Response file created"))
-            st.json(data)
+        # data = api_request("post", "/WriteResponseFile", api_base, auth, payload=payload_to_submit)
+        # if data:
+        #     st.success(data.get("message", "Response file created"))
+        #     st.json(data)
 
 
 
@@ -1266,7 +1662,7 @@ def render_job_result(payload: Dict[str, Any]):
         rows.append({"Field": k, "Value": v})
     if rows:
         st.markdown("#### Run result")
-        st_df_safe(pd.DataFrame(rows), hide_index=True, width='stretch')
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
     if cmd_lines:
         st.markdown("##### ZDM CLI command")
         st.code("\n".join(cmd_lines) if isinstance(cmd_lines, list) else str(cmd_lines), language="bash")
@@ -1315,38 +1711,14 @@ if section == "createjob":
 
     # Auto-load job definition if exists for project+run_type
     auto_job_key = f"{project}:{run_type}".lower()
-    auto_load_state_key = "runjob_auto_loaded_key"
-    runjob_form_state_keys = [
-        "runjob_sourcedb",
-        "runjob_sourcesid",
-        "runjob_sourcenode",
-        "runjob_srcauth",
-        "runjob_srcarg1",
-        "runjob_srcarg2",
-        "runjob_srcarg3",
-        "runjob_sourcesyswallet_name",
-        "runjob_targetnode",
-        "runjob_tgtauth",
-        "runjob_tgtarg1",
-        "runjob_tgtarg2",
-        "runjob_tgtarg3",
-        "runjob_advisor_mode",
-        "runjob_flow_control",
-        "runjob_genfixup",
-        "runjob_custom_args",
-    ]
-    form_state_missing = not any(key in st.session_state for key in runjob_form_state_keys)
-    should_auto_load = bool(pending_load) or st.session_state.get(auto_load_state_key) != auto_job_key or form_state_missing
     if project != "-- Select project --" and isinstance(saved_jobs_resp, dict):
         for name, job in saved_jobs_resp.items():
             if not isinstance(job, dict):
                 continue
-            is_auto_match = str(job.get("project")) == project and (job.get("run_type") or "").upper() == run_type
-            if (pending_load == name) or (should_auto_load and is_auto_match):
+            if (pending_load == name) or (str(job.get("project")) == project and (job.get("run_type") or "").upper() == run_type):
                 # Populate fields once per selection
                 st.session_state["runjob_rsp"] = job.get("rsp") or f"{project}.rsp"
                 st.session_state["runjob_sourcedb"] = job.get("sourcedb") or ""
-                st.session_state["runjob_sourcesid"] = job.get("sourcesid") or ""
                 st.session_state["runjob_sourcenode"] = job.get("sourcenode") or ""
                 st.session_state["runjob_srcauth"] = job.get("srcauth") or ""
                 st.session_state["runjob_srcarg1"] = job.get("srcarg1") or ""
@@ -1376,29 +1748,22 @@ if section == "createjob":
                 st.session_state["runjob_schedule_text"] = "" if st.session_state.get("runjob_schedule_now") else (job.get("schedule") or "")
                 st.session_state["runjob_listphases"] = bool(job.get("listphases"))
                 st.session_state["runjob_custom_args"] = "\n".join(job.get("custom_args") or [])
-                st.session_state[auto_load_state_key] = auto_job_key
                 break
 
     if project == "-- Select project --":
         st.info("Select a project to start.")
         st.stop()
 
+    migration_type = ""
+    if isinstance(projects_resp, dict):
+        migration_type = str(projects_resp.get(project, {}).get("migration_type", "") or "").upper()
+    if not migration_type:
+        migration_type = "LOGICAL_OFFLINE"
+
     def _blank(v: Any) -> bool:
         return v is None or (isinstance(v, str) and not v.strip())
 
     proj_obj = projects_resp.get(project, {}) if isinstance(projects_resp, dict) else {}
-    project_migration_method = str(proj_obj.get("migration_method") or "").strip().upper()
-    supported_migration_methods = {
-        "OFFLINE_LOGICAL": "LOGICAL_OFFLINE",
-    }
-    if not project_migration_method:
-        st.error("Project migration_method is required in projects.json before creating a job.")
-        st.stop()
-    migration_type = supported_migration_methods.get(project_migration_method)
-    if not migration_type:
-        st.error(f"Create Job currently supports OFFLINE_LOGICAL only. Project migration_method is {project_migration_method}.")
-        st.stop()
-
     target_conn_name = proj_obj.get("target_connection") or proj_obj.get("target") or ""
     target_db_type = ""
     if isinstance(connections_resp, dict) and target_conn_name:
@@ -1406,15 +1771,72 @@ if section == "createjob":
 
     def _show_target_ssh(db_type: str) -> bool:
         return (db_type or "").upper() not in ("ADBD", "ADBS", "ADBCC")
+    existing_payload = None
+    for k in [
+        "existing_payload",
+        "existing_response_payload",
+        "rsp_payload",
+        "response_payload",
+        "payload",
+        "responsefile_payload",
+        "response_file_payload",
+    ]:
+        v = proj_obj.get(k) if isinstance(proj_obj, dict) else None
+        if isinstance(v, dict) and v:
+            existing_payload = v
+            break
 
-    rsp_value = proj_obj.get("rsp")
-    default_rsp_name = rsp_value.strip() if isinstance(rsp_value, str) and rsp_value.strip() else f"{project}.rsp"
+    existing_rsp_name = ""
+    for k in ["rsp", "response_file", "response_file_name", "rsp_name", "rspFile"]:
+        v = proj_obj.get(k) if isinstance(proj_obj, dict) else None
+        if isinstance(v, str) and v.strip():
+            existing_rsp_name = v.strip()
+            break
+
+    default_rsp_name = existing_rsp_name or f"{project}.rsp"
     if _blank(st.session_state.get("runjob_rsp")):
         st.session_state["runjob_rsp"] = default_rsp_name
 
     auto_base = f"{project}_{run_type.lower()}"
     job_key = "runjob_job_name"
     st.session_state[job_key] = auto_base
+
+    seeded_key = "runjob_seeded_project"
+    if st.session_state.get(seeded_key) != project and isinstance(existing_payload, dict):
+        RF_TO_STATE = {
+            "sourcedb": "runjob_sourcedb",
+            "sourcenode": "runjob_sourcenode",
+            "srcauth": "runjob_srcauth",
+            "srcarg1": "runjob_srcarg1",
+            "srcarg2": "runjob_srcarg2",
+            "srcarg3": "runjob_srcarg3",
+            "targetnode": "runjob_targetnode",
+            "tgtauth": "runjob_tgtauth",
+            "tgtarg1": "runjob_tgtarg1",
+            "tgtarg2": "runjob_tgtarg2",
+            "tgtarg3": "runjob_tgtarg3",
+        }
+
+        ALT_KEYS = {
+            "SOURCEDATABASE_CONNECTIONDETAILS_HOST": "runjob_sourcenode",
+            "SOURCEDATABASE_ADMINUSERNAME": "runjob_srcauth",
+            "TARGETDATABASE_ADMINUSERNAME": "runjob_tgtauth",
+        }
+
+        def _apply_map(src: Dict[str, Any], mapping: Dict[str, str]) -> None:
+            for rf_key, state_key in mapping.items():
+                if rf_key not in src:
+                    continue
+                val = src.get(rf_key)
+                if _blank(val):
+                    continue
+                if _blank(st.session_state.get(state_key)):
+                    st.session_state[state_key] = str(val)
+
+        _apply_map(existing_payload, RF_TO_STATE)
+        _apply_map(existing_payload, ALT_KEYS)
+
+        st.session_state[seeded_key] = project
 
     # Always keep RSP/job name in sync, no user edits
     st.session_state["runjob_rsp"] = default_rsp_name
@@ -1444,12 +1866,6 @@ if section == "createjob":
 
         if migration_type == "LOGICAL_OFFLINE":
             with st.expander("ZDM CLI args (Logical Offline)", expanded=True):
-                src_db_col, src_sid_col = st.columns(2)
-                with src_db_col:
-                    st.text_input("-sourcedb", key="runjob_sourcedb")
-                with src_sid_col:
-                    st.text_input("-sourcesid", key="runjob_sourcesid")
-
                 col_opt_a, col_opt_b = st.columns(2)
                 with col_opt_a:
                     st.text_input("-sourcenode", key="runjob_sourcenode")
@@ -1503,7 +1919,7 @@ if section == "createjob":
         with action_col1:
             save_and_run = st.button("Save & Run", type="primary")
         with action_col2:
-            save_only = st.button("Save only", type="secondary", width='stretch')
+            save_only = st.button("Save only", type="secondary", use_container_width=True)
         run_clicked = save_and_run
 
     if save_only or save_and_run:
@@ -1513,7 +1929,6 @@ if section == "createjob":
             "rsp": (st.session_state.get("runjob_rsp") or "").strip() or None,
             "run_type": st.session_state.get("runjob_run_type"),
             "sourcedb": st.session_state.get("runjob_sourcedb") or None,
-            "sourcesid": st.session_state.get("runjob_sourcesid") or None,
             "sourcenode": st.session_state.get("runjob_sourcenode") or None,
             "srcauth": st.session_state.get("runjob_srcauth") or None,
             "srcarg1": st.session_state.get("runjob_srcarg1") or None,
@@ -1534,9 +1949,6 @@ if section == "createjob":
             "listphases": listphases,
             "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
         }
-        for key in ("sourcedb", "sourcesid"):
-            if not payload_save.get(key):
-                payload_save.pop(key, None)
         resp_save = api_request("post", "/jobsaved", api_base, auth, payload=payload_save)
         if resp_save:
             st.success(f"Saved job '{payload_save['name']}'.")
@@ -1554,8 +1966,6 @@ if section == "createjob":
                 "project": project,
                 "run_type": run_type,
                 "rsp": rsp_name,
-                "sourcedb": (st.session_state.get("runjob_sourcedb") or "").strip() or None,
-                "sourcesid": (st.session_state.get("runjob_sourcesid") or "").strip() or None,
                 "sourcenode": (st.session_state.get("runjob_sourcenode") or "").strip() or None,
                 "srcauth": (st.session_state.get("runjob_srcauth") or "").strip() or None,
                 "srcarg1": (st.session_state.get("runjob_srcarg1") or "").strip() or None,
@@ -1576,9 +1986,6 @@ if section == "createjob":
                 "listphases": listphases,
                 "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
             }
-            for key in ("sourcedb", "sourcesid"):
-                if not payload.get(key):
-                    payload.pop(key, None)
 
             data = api_request("post", "/runjob", api_base, auth, payload=payload)
             if data:
@@ -1598,12 +2005,12 @@ elif section == "runjob":
     saved_sel = st.selectbox("Saved job definitions", saved_job_names, key="runjob_saved_select")
     c2, c3, c4 = st.columns([0.34, 0.33, 0.33])
     with c2:
-        if st.button("View", key="runjob_view_saved_btn", width='stretch'):
+        if st.button("View", key="runjob_view_saved_btn", use_container_width=True):
             if saved_sel != "-- Select saved job --":
                 st.session_state["runjob_view_job"] = saved_sel
                 st.rerun()
     with c3:
-        if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
+        if st.button("Run", key="runjob_run_saved_btn", use_container_width=True):
             if saved_sel != "-- Select saved job --":
                 job = saved_jobs_resp.get(saved_sel, {})
                 if job:
@@ -1611,8 +2018,6 @@ elif section == "runjob":
                         "project": job.get("project"),
                         "run_type": job.get("run_type") or "EVAL",
                         "rsp": job.get("rsp"),
-                        "sourcedb": job.get("sourcedb"),
-                        "sourcesid": job.get("sourcesid"),
                         "sourcenode": job.get("sourcenode"),
                         "srcauth": job.get("srcauth"),
                         "srcarg1": job.get("srcarg1"),
@@ -1633,15 +2038,12 @@ elif section == "runjob":
                         "listphases": job.get("listphases"),
                         "custom_args": job.get("custom_args"),
                     }
-                    for key in ("sourcedb", "sourcesid"):
-                        if not payload.get(key):
-                            payload.pop(key, None)
                     data = api_request("post", "/runjob", api_base, auth, payload=payload)
                     if data:
                         st.success(f"Ran saved job '{saved_sel}'")
                         st.session_state["last_job_status"] = data
     with c4:
-        if st.button("Delete", key="runjob_delete_saved_btn", width='stretch'):
+        if st.button("Delete", key="runjob_delete_saved_btn", use_container_width=True):
             if saved_sel != "-- Select saved job --":
                 resp = api_request("delete", f"/jobsaved/{saved_sel}", api_base, auth)
                 if resp:
@@ -1657,14 +2059,12 @@ elif section == "runjob":
                 for k, v in vjob.items()
             ]
         )
-        st_df_safe(df_view, hide_index=True, width='stretch')
+        st.dataframe(df_view, hide_index=True, use_container_width=True)
         # Get live command preview via dry_run
         payload_preview = {
             "project": vjob.get("project"),
             "run_type": vjob.get("run_type") or "EVAL",
             "rsp": vjob.get("rsp"),
-            "sourcedb": vjob.get("sourcedb"),
-            "sourcesid": vjob.get("sourcesid"),
             "sourcenode": vjob.get("sourcenode"),
             "srcauth": vjob.get("srcauth"),
             "srcarg1": vjob.get("srcarg1"),
@@ -1686,9 +2086,6 @@ elif section == "runjob":
             "custom_args": vjob.get("custom_args"),
             "dry_run": True,
         }
-        for key in ("sourcedb", "sourcesid"):
-            if not payload_preview.get(key):
-                payload_preview.pop(key, None)
         cmd_resp = api_request("post", "/runjob", api_base, auth, payload=payload_preview, quiet=False)
         if cmd_resp and isinstance(cmd_resp, dict) and cmd_resp.get("status") in ("planned", "success"):
             cmd_lines = cmd_resp.get("command")
@@ -1791,7 +2188,7 @@ elif section == "jobs":
             else:
                 st.caption("No recent Job IDs")
         with row[2]:
-            query_clicked = st.button("Query", type="primary", width='stretch')
+            query_clicked = st.button("Query", type="primary", use_container_width=True)
 
         if query_clicked:
             job_id_clean = (job_id or "").strip()
@@ -1876,7 +2273,7 @@ elif section == "jobs":
 
                 with st.expander("Raw output", expanded=False):
                     if out_text:
-                        st.text_area("Raw output", value=out_text, height=260, disabled=True, label_visibility="collapsed")
+                        st.text_area("", value=out_text, height=260, disabled=True, label_visibility="collapsed")
                     else:
                         st.info("No output text returned.")
 
@@ -2138,15 +2535,6 @@ elif section == "discovery":
             "streams_pool_hint": streams_hint,
         }
 
-    def cloud_identity_record(raw: Any) -> Dict[str, Any]:
-        rows = raw if isinstance(raw, list) else [raw]
-
-        for row in rows:
-            if isinstance(row, dict) and "error" not in row and row.get("DATABASE_OCID"):
-                return row
-
-        return {}
-
     run_disc = st.button("Run discovery", type="primary")
 
     # -------- snapshot sourcing (cached from backend or freshly run) --------
@@ -2241,20 +2629,12 @@ elif section == "discovery":
             if chips:
                 st.markdown(" ".join([f"`{c}`" for c in chips]))
 
-        cloud_identity = cloud_identity_record(snapshot.get("cloud_identity"))
-
-        tab_names = ["Readiness", "Summary", "Schemas", "Tablespaces", "Directories", "NLS & TZ"]
-        cloud_tab_idx = None
-        if cloud_identity:
-            cloud_tab_idx = len(tab_names)
-            tab_names.append("Cloud Identity")
-        tab_names.append("Raw JSON")
-        tabs = st.tabs(tab_names)
+        tabs = st.tabs(["Readiness", "Summary", "Schemas", "Tablespaces", "Directories", "NLS & TZ", "Raw JSON"])
 
         with tabs[0]:
             checks = normalized.get("readiness_checks") or []
             if checks:
-                st_df_safe(pd.DataFrame(checks), hide_index=True, width='stretch')
+                st.dataframe(pd.DataFrame(checks), hide_index=True, use_container_width=True)
             else:
                 st.info("No readiness checks defined for this migration type yet.")
 
@@ -2279,7 +2659,7 @@ elif section == "discovery":
             ]
             grid = pd.DataFrame(grid_rows)
             grid = grid.dropna(how="all")
-            st_df_safe(grid, hide_index=True, width='stretch')
+            st.dataframe(grid, hide_index=True, use_container_width=True)
 
         # ---------- Schemas / tablespaces / dirs
         with tabs[2]:
@@ -2290,7 +2670,7 @@ elif section == "discovery":
                 else:
                     df = pd.DataFrame(schemas)
                     df.columns = [c.title().replace("_", " ") for c in df.columns]
-                st_df_safe(df, hide_index=True, width='stretch')
+                st.dataframe(df, hide_index=True, use_container_width=True)
             else:
                 st.info("No schemas returned.")
 
@@ -2301,7 +2681,7 @@ elif section == "discovery":
                     df = pd.DataFrame({"Tablespace": tbs})
                 else:
                     df = pd.DataFrame(tbs)
-                st_df_safe(df, hide_index=True, width='stretch')
+                st.dataframe(df, hide_index=True, use_container_width=True)
             else:
                 st.info("No tablespaces returned.")
 
@@ -2310,7 +2690,7 @@ elif section == "discovery":
             if isinstance(dirs, list) and dirs:
                 df = pd.DataFrame(dirs)
                 df.columns = [c.title().replace("_", " ") for c in df.columns]
-                st_df_safe(df, hide_index=True, width='stretch')
+                st.dataframe(df, hide_index=True, use_container_width=True)
             else:
                 st.info("No directories returned.")
 
@@ -2319,7 +2699,7 @@ elif section == "discovery":
             tz = snapshot.get("timezone")
             if nls:
                 st.markdown("**NLS Parameters**")
-                st_df_safe(pd.DataFrame(nls), hide_index=True, width='stretch')
+                st.dataframe(pd.DataFrame(nls), hide_index=True, use_container_width=True)
             if tz:
                 tz_val = tz.get("VERSION") if isinstance(tz, dict) else tz
                 st.markdown("**Timezone file version**")
@@ -2327,28 +2707,5 @@ elif section == "discovery":
             if not nls and not tz:
                 st.info("No NLS/TZ data.")
 
-        if cloud_tab_idx is not None:
-            with tabs[cloud_tab_idx]:
-                st.markdown("### Cloud Identity")
-                cloud_grid_rows = [
-                    {"Field": "Database Name", "Value": cloud_identity.get("DATABASE_NAME")},
-                    {"Field": "Region", "Value": cloud_identity.get("REGION")},
-                    {"Field": "Tenant OCID", "Value": cloud_identity.get("TENANT_OCID")},
-                    {"Field": "Database OCID", "Value": cloud_identity.get("DATABASE_OCID")},
-                    {"Field": "Compartment OCID", "Value": cloud_identity.get("COMPARTMENT_OCID")},
-                    {"Field": "Outbound IP Address", "Value": cloud_identity.get("OUTBOUND_IP_ADDRESS")},
-                    {"Field": "Public Domain Name", "Value": cloud_identity.get("PUBLIC_DOMAIN_NAME")},
-                    {"Field": "Autoscalable Storage", "Value": cloud_identity.get("AUTOSCALABLE_STORAGE")},
-                    {"Field": "Base Size", "Value": cloud_identity.get("BASE_SIZE")},
-                    {"Field": "Infrastructure", "Value": cloud_identity.get("INFRASTRUCTURE")},
-                    {"Field": "Service", "Value": cloud_identity.get("SERVICE")},
-                    {"Field": "Applications", "Value": cloud_identity.get("APPLICATIONS")},
-                    {"Field": "Compute Model", "Value": cloud_identity.get("COMPUTE_MODEL")},
-                    {"Field": "Compute Count", "Value": cloud_identity.get("COMPUTE_COUNT")},
-                    {"Field": "Compute Autoscaling", "Value": cloud_identity.get("COMPUTE_AUTOSCALING")},
-                ]
-                cloud_grid = pd.DataFrame(cloud_grid_rows)
-                st_df_safe(cloud_grid, hide_index=True, width='stretch')
-
-        with tabs[-1]:
+        with tabs[6]:
             st.json(snapshot, expanded=False)
