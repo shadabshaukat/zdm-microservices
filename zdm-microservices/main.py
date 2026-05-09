@@ -1119,7 +1119,8 @@ def get_latest_discovery(name: str, username: str = Depends(verify_credentials))
 @app.post("/WriteResponseFile")
 def write_response_file(payload: WriteResponseFileRequest, username: str = Depends(verify_credentials)):
     # Write-only endpoint: the frontend supplies the final response-file lines.
-    return _write_responsefile_lines(payload.project, payload.lines, migration_method=payload.migration_method)
+    migration_method = getattr(payload, "migration_method", None)
+    return _write_responsefile_lines(payload.project, payload.lines, migration_method=migration_method)
 
 
 @app.post("/responsefile/copy")
