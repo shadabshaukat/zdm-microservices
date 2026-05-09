@@ -575,8 +575,6 @@ elif section == "response":
             if key.startswith("rf_") and key not in keep_response_keys:
                 st.session_state.pop(key, None)
         st.session_state["rf_form_loaded_project"] = ""
-        st.session_state["rf_use_manual"] = False
-        st.session_state["rf_manual_text"] = ""
         if include_project:
             st.session_state["rf_project"] = "-- Select project --"
             st.session_state["rf_active_project"] = ""
@@ -639,11 +637,6 @@ elif section == "response":
         }
     wallet_names = ["-- Select wallet --"] + list(wallet_map.keys())
 
-    # manual override state (init ONCE, don't overwrite later)
-    if "rf_use_manual" not in st.session_state:
-        st.session_state["rf_use_manual"] = False
-    if "rf_manual_text" not in st.session_state:
-        st.session_state["rf_manual_text"] = ""  # filled by "Reset" button or first-time below
     if "rf_form_loaded_project" not in st.session_state:
         st.session_state["rf_form_loaded_project"] = ""
 
@@ -827,8 +820,6 @@ elif section == "response":
                 }
                 copy_resp = api_request("post", "/responsefile/copy", api_base, auth, payload=copy_payload)
                 if copy_resp:
-                    st.session_state["rf_use_manual"] = False
-                    st.session_state["rf_manual_text"] = ""
                     st.session_state.pop("rf_remap_table", None)
                     st.session_state.pop("rf_additional_table", None)
                     st.session_state["rf_form_loaded_project"] = ""
@@ -1157,62 +1148,15 @@ elif section == "response":
     with col_preview:
         st.markdown("### Payload")
         existing_rsp = api_request("get", f"/responsefile/{project}", api_base, auth, quiet=True)
-        tab_auto, tab_manual, tab_rsp = st.tabs(["Preview", "Manual override", "RSP view"])
+        tab_preview, tab_rsp = st.tabs(["Preview", "RSP view"])
 
-        use_manual = st.session_state.get("rf_use_manual", False)
-
-        with tab_auto:
-            if use_manual and st.session_state.get("rf_manual_text", "").strip():
-                st.info("Manual override is enabled. Preview below is your manual JSON.")
-                st.code(st.session_state["rf_manual_text"], language="json")
-            else:
-                st.code(json.dumps(preview_payload, indent=2), language="json")
-
-        with tab_manual:
-            # Keep the original JSON override UX:
-            # - Reset from current preview
-            # - Checkbox to use manual JSON for submit
-            top_a, top_b = st.columns([1, 1])
-
-            with top_a:
-                reset_clicked = st.button("Reset manual from current preview", key="rf_reset_manual")
-
-            with top_b:
-                st.checkbox(
-                    "Use manual payload for submit",
-                    key="rf_use_manual",
-                    help="When enabled, ZEUS will render response-file lines from the JSON below and submit them to /WriteResponseFile.",
-                )
-
-            # Safely seed manual text BEFORE the text_area widget is created
-            if reset_clicked or not st.session_state.get("rf_manual_text", "").strip():
-                st.session_state["rf_manual_text"] = json.dumps(preview_payload, indent=2)
-
-            manual_text = st.text_area(
-                "Editable JSON payload",
-                height=480,
-                key="rf_manual_text",
-                help="Edit any key/value. When 'Use manual' is enabled, this JSON is used (UI validation is skipped).",
-            )
-
-            if manual_text.strip():
-                try:
-                    obj = json.loads(manual_text)
-                    if not isinstance(obj, dict):
-                        st.error("JSON must be an object (dictionary).")
-                    else:
-                        st.success("JSON is valid.")
-                except Exception as exc:
-                    st.error(f"Invalid JSON: {exc}")
+        with tab_preview:
+            st.code(json.dumps(preview_payload, indent=2), language="json")
 
         with tab_rsp:
             if existing_rsp and isinstance(existing_rsp, dict) and existing_rsp.get("status") == "success":
                 st.caption("Existing response file")
                 st.code(existing_rsp.get("content", ""), language="ini")
-                if st.button("Load existing into manual editor", key="rf_load_existing_btn", type="secondary"):
-                    st.session_state["rf_manual_text"] = existing_rsp.get("content", "")
-                    st.session_state["rf_use_manual"] = True
-                    st.rerun()
             else:
                 rsp_lines_preview = generate_rsp_lines(preview_payload)
                 st.caption("Would be written as:")
@@ -1221,26 +1165,7 @@ elif section == "response":
 
 # ---- Handle submit (after UI built)
     if submit_clicked:
-        use_manual = st.session_state.get("rf_use_manual", False)
-
-        # Default: submit what UI generated
         lines_to_submit: List[str] = generate_rsp_lines(preview_payload)
-
-        
-        if use_manual:
-            try:
-                payload_obj = json.loads(st.session_state.get("rf_manual_text", ""))
-            except Exception as exc:
-                st.error(f"Manual payload invalid JSON: {exc}")
-                st.stop()
-
-            if not isinstance(payload_obj, dict):
-                st.error("Manual payload must be a JSON object (dictionary).")
-                st.stop()
-
-            lines_to_submit = generate_rsp_lines(payload_obj)
-
-
 
         payload_to_submit = {
             "project": project,
