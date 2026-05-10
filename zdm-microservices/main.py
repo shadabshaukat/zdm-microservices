@@ -13,12 +13,13 @@ from pydantic import BaseModel
 import json
 import tempfile
 import uuid
-from datetime import datetime
-from typing import Optional, List, Dict, Any, Union
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any, Union, Tuple
 from pathlib import Path
 import subprocess
 import os
 import re
+import shlex
 import hashlib
 from passlib.context import CryptContext
 try:
@@ -415,6 +416,347 @@ def find_project_by_job(job_id: str) -> Optional[str]:
 @app.get("/jobids")
 def list_job_ids(username: str = Depends(verify_credentials)):
     return {"job_ids": load_job_ids()}
+
+
+def _zdm_job_snapshot_file_path() -> str:
+    target_dir = os.path.join(MIGRATION_BASE, "jobs")
+    os.makedirs(target_dir, exist_ok=True)
+    return os.path.join(target_dir, "zdm_job_snapshot.json")
+
+
+def _load_zdm_job_snapshot() -> Dict[str, Any]:
+    payload = _load_json_file(_zdm_job_snapshot_file_path())
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_zdm_job_snapshot(snapshot: Dict[str, Any]) -> None:
+    _save_json_file(_zdm_job_snapshot_file_path(), snapshot)
+
+
+def _clean_zdm_value(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
+        return cleaned[1:-1]
+    return cleaned
+
+
+def _attribute_key(label: str) -> str:
+    key = re.sub(r"[^A-Za-z0-9]+", "_", label.strip().lower()).strip("_")
+    return key or "attribute"
+
+
+def _parse_elapsed_seconds(text: Optional[str]) -> Optional[int]:
+    if not text:
+        return None
+    units = {
+        "day": 86400,
+        "days": 86400,
+        "hour": 3600,
+        "hours": 3600,
+        "minute": 60,
+        "minutes": 60,
+        "second": 1,
+        "seconds": 1,
+    }
+    total = 0
+    found = False
+    for amount, unit in re.findall(r"(\d+)\s*(days?|hours?|minutes?|seconds?)", text.lower()):
+        found = True
+        total += int(amount) * units[unit]
+    return total if found else None
+
+
+def _parse_scheduled_command_args(command: str) -> Dict[str, Any]:
+    if not command:
+        return {}
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+
+    args: Dict[str, Any] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("-") or token == "-":
+            index += 1
+            continue
+
+        key = token.lstrip("-")
+        value: Any = True
+        if index + 1 < len(tokens) and not tokens[index + 1].startswith("-"):
+            value = tokens[index + 1]
+            index += 1
+
+        existing = args.get(key)
+        if existing is None:
+            args[key] = value
+        elif isinstance(existing, list):
+            existing.append(value)
+        else:
+            args[key] = [existing, value]
+        index += 1
+    return args
+
+
+def _derive_current_phase(phases: List[Dict[str, str]]) -> Optional[str]:
+    if not phases:
+        return None
+    for phase in phases:
+        if (phase.get("status") or "").upper() == "FAILED":
+            return phase.get("name")
+
+    active_statuses = {"RUNNING", "EXECUTING", "STARTED", "IN_PROGRESS"}
+    for phase in phases:
+        if (phase.get("status") or "").upper() in active_statuses:
+            return phase.get("name")
+
+    for phase in reversed(phases):
+        if (phase.get("status") or "").upper() != "PENDING":
+            return phase.get("name")
+    return None
+
+
+def _parse_zdm_query_job_output(output: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    jobs: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    current: Optional[Dict[str, Any]] = None
+    in_embedded_result = False
+
+    def new_job(job_id: str) -> Dict[str, Any]:
+        return {
+            "job_id": str(job_id),
+            "times": {},
+            "files": {},
+            "phases": [],
+            "attributes": {},
+            "warnings": [],
+        }
+
+    def finish_job(job: Dict[str, Any]) -> Dict[str, Any]:
+        command = job.get("scheduled_command") or ""
+        job["scheduled_args"] = _parse_scheduled_command_args(command)
+        elapsed = job.get("times", {}).get("elapsed_text")
+        elapsed_seconds = _parse_elapsed_seconds(elapsed)
+        if elapsed_seconds is not None:
+            job["times"]["elapsed_seconds"] = elapsed_seconds
+        current_phase = _derive_current_phase(job.get("phases", []))
+        if current_phase:
+            job["current_phase"] = current_phase
+        return job
+
+    phase_re = re.compile(r"^([A-Z][A-Z0-9_]+)\s+\.{2,}\s+([A-Z][A-Z0-9_ -]*)$")
+
+    for raw_line in (output or "").splitlines():
+        line = raw_line.strip()
+        job_match = re.match(r"^Job ID:\s*(\S+)\s*$", line)
+        if job_match:
+            if current is not None:
+                jobs.append(finish_job(current))
+            current = new_job(job_match.group(1))
+            in_embedded_result = False
+            continue
+
+        if current is None:
+            continue
+        if not line:
+            continue
+
+        if line.startswith("Result file ") and line.endswith(" contents:"):
+            in_embedded_result = True
+            continue
+        if "JOB_EXECUTION_DETAILS_START" in line:
+            in_embedded_result = True
+            continue
+        if "JOB_EXECUTION_DETAILS_END" in line:
+            in_embedded_result = False
+            continue
+        if in_embedded_result:
+            continue
+
+        phase_match = phase_re.match(line)
+        if phase_match:
+            current["phases"].append({
+                "name": phase_match.group(1),
+                "status": phase_match.group(2).strip().upper(),
+            })
+            continue
+
+        if ":" not in line:
+            continue
+
+        label, value_raw = line.split(":", 1)
+        label = label.strip()
+        value = _clean_zdm_value(value_raw)
+        if label == "Scheduled job execution start time":
+            value = value.split(". Equivalent local time:", 1)[0].strip()
+            current["times"]["scheduled_start"] = value
+        elif label == "Job Type":
+            current["job_type"] = value
+        elif label == "Scheduled job command":
+            current["scheduled_command"] = value
+        elif label == "Current status":
+            current["status"] = value.upper()
+        elif label == "Result file path":
+            current["files"]["result"] = value
+        elif label == "Metrics file path":
+            current["files"]["metrics"] = value
+        elif label == "Excluded objects file path":
+            current["files"]["excluded_objects"] = value
+        elif label == "Job execution start time":
+            current["times"]["execution_start"] = value
+        elif label == "Job execution end time":
+            current["times"]["execution_end"] = value
+        elif label == "Job execution elapsed time":
+            current["times"]["elapsed_text"] = value
+        else:
+            current["attributes"][_attribute_key(label)] = value
+
+    if current is not None:
+        jobs.append(finish_job(current))
+
+    return jobs, warnings
+
+
+def _link_project_for_zdm_job(job: Dict[str, Any], projects: Dict[str, Dict[str, Any]]) -> Optional[str]:
+    job_id = str(job.get("job_id") or "")
+    if job_id:
+        for project_name, project in projects.items():
+            job_map = project.get("jobs", {})
+            if not isinstance(job_map, dict):
+                continue
+            for ids in job_map.values():
+                if isinstance(ids, list) and any(str(value) == job_id for value in ids):
+                    return project_name
+
+    rsp = str((job.get("scheduled_args") or {}).get("rsp") or "")
+    if rsp:
+        match = re.search(r"/responses/([^/]+)/", rsp)
+        if match and match.group(1) in projects:
+            return match.group(1)
+        rsp_name = Path(rsp).stem
+        if rsp_name in projects:
+            return rsp_name
+    return None
+
+
+def _read_responsefile_values_from_path(path: str) -> Dict[str, str]:
+    if not path:
+        return {}
+    try:
+        if not os.path.exists(path):
+            return {}
+        values: Dict[str, str] = {}
+        with open(path, "r", encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                values[key.strip()] = value.strip()
+        return values
+    except Exception:
+        return {}
+
+
+def _read_responsefile_values(project: str) -> Dict[str, str]:
+    if not project:
+        return {}
+    return _read_responsefile_values_from_path(_responsefile_path(project))
+
+
+def _inventory_for_zdm_job(
+    job: Dict[str, Any],
+    projects: Dict[str, Dict[str, Any]],
+    connections: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    project_name = job.get("project")
+    project = projects.get(project_name, {}) if project_name else {}
+    source_name = project.get("source_connection") if isinstance(project, dict) else None
+    target_name = project.get("target_connection") if isinstance(project, dict) else None
+    response_file = _read_responsefile_values(project_name) if project_name else {}
+    if not response_file:
+        rsp = str((job.get("scheduled_args") or {}).get("rsp") or "")
+        if os.path.isabs(rsp):
+            response_file = _read_responsefile_values_from_path(rsp)
+    return {
+        "project": dict(project) if isinstance(project, dict) else {},
+        "source_connection": dict(connections.get(source_name, {})) if source_name else {},
+        "target_connection": dict(connections.get(target_name, {})) if target_name else {},
+        "response_file": response_file,
+    }
+
+
+def _refresh_zdm_job_snapshot() -> Dict[str, Any]:
+    query_script = """
+    #!/bin/bash
+    $ZDM_HOME/bin/zdmcli query job
+    """
+    script_path = write_temp_script("query_jobs_", query_script, "_global")
+    result = subprocess.run(
+        ["/bin/bash", script_path],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Query jobs failed with return code {result.returncode}: {result.stderr or result.stdout}",
+        )
+
+    jobs, warnings = _parse_zdm_query_job_output(result.stdout)
+    projects = load_projects()
+    for job in jobs:
+        project = _link_project_for_zdm_job(job, projects)
+        if project:
+            job["project"] = project
+
+    snapshot = {
+        "schema_version": 1,
+        "last_refreshed": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "command": "$ZDM_HOME/bin/zdmcli query job",
+        "return_code": result.returncode,
+        "raw_stdout": result.stdout,
+        "raw_stderr": result.stderr,
+        "jobs": jobs,
+        "warnings": warnings,
+    }
+    _save_zdm_job_snapshot(snapshot)
+    return snapshot
+
+
+@app.get("/query/jobs")
+def list_zdm_jobs(
+    refresh: bool = False,
+    username: str = Depends(verify_credentials),
+):
+    snapshot = {} if refresh else _load_zdm_job_snapshot()
+    source = "cache"
+    if refresh or not snapshot:
+        snapshot = _refresh_zdm_job_snapshot()
+        source = "zdmcli"
+
+    jobs = snapshot.get("jobs", [])
+    if not isinstance(jobs, list):
+        jobs = []
+
+    projects = load_projects()
+    connections = load_connections()
+
+    records = []
+    for job in jobs:
+        inventory = _inventory_for_zdm_job(job, projects, connections)
+        records.append({"job": job, "inventory": inventory})
+
+    return {
+        "status": "success",
+        "source": source,
+        "last_refreshed": snapshot.get("last_refreshed"),
+        "jobs": records,
+        "warnings": snapshot.get("warnings", []),
+    }
 
 
 def get_sql_catalog() -> Dict[str, Any]:

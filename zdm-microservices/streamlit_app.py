@@ -4,14 +4,27 @@ import re
 import pandas as pd
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
+from urllib.parse import quote
 
 import requests
 import streamlit as st
 from requests.auth import HTTPBasicAuth
 try:
     from .backend_auth import first_user_defaults  # package-style
+    from .job_dashboard import (
+        KPI_COLUMNS,
+        zdm_fleet_dataframe,
+        zdm_job_kpis,
+        zdm_job_records_to_dataframe,
+    )
 except ImportError:
     from backend_auth import first_user_defaults  # script-style
+    from job_dashboard import (
+        KPI_COLUMNS,
+        zdm_fleet_dataframe,
+        zdm_job_kpis,
+        zdm_job_records_to_dataframe,
+    )
 
 
 # Wrapper to avoid Arrow type errors from mixed object columns.
@@ -215,6 +228,24 @@ def extract_job_id(text: str) -> Optional[str]:
     return None
 
 
+def query_param(name: str, default: str = "") -> str:
+    try:
+        value = st.query_params.get(name, default)
+    except Exception:
+        return default
+    if isinstance(value, list):
+        return str(value[0]) if value else default
+    return str(value or default)
+
+
+def _monitor_job_url(job_id: Any, view: str = "details") -> str:
+    job_id_text = str(job_id or "").strip()
+    if not job_id_text:
+        return ""
+    view_text = "logs" if str(view).lower() == "logs" else "details"
+    return f"?section=jobs&job_id={quote(job_id_text)}&view={view_text}"
+
+
 # -----------------------------
 # Branding
 # -----------------------------
@@ -264,10 +295,14 @@ with st.sidebar:
         "Response Files": "response",
         "Create Job": "createjob",
         "Run Job": "runjob",
+        "Migration Dashboard": "fleet_dashboard",
         "Monitor Jobs": "jobs",
         "Wallets & Credentials": "wallet",
     }
-    nav_choice = st.radio("Go to", list(nav_options.keys()))
+    nav_labels = list(nav_options.keys())
+    requested_section = query_param("section")
+    requested_label = next((label for label, value in nav_options.items() if value == requested_section), nav_labels[0])
+    nav_choice = st.radio("Go to", nav_labels, index=nav_labels.index(requested_label))
     st.divider()
     st.caption(f"API: {st.session_state.get('api_base','') or 'not set'}")
     st.caption(f"User: {st.session_state.get('username','') or 'not set'}")
@@ -1636,6 +1671,328 @@ elif section == "runjob":
         st.info("No job submitted yet.")
 
 
+elif section == "fleet_dashboard":
+    st.subheader("Migration Dashboard")
+    st.caption("Fleet view of ZEUS migration jobs across projects and databases.")
+
+    refresh_col, meta_col = st.columns([0.18, 0.82], vertical_alignment="center")
+    with refresh_col:
+        refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
+
+    if refresh_jobs or "fleet_jobs_payload" not in st.session_state:
+        payload = api_request(
+            "get",
+            "/query/jobs",
+            api_base,
+            auth,
+            params={"refresh": "true"} if refresh_jobs else None,
+            timeout=180 if refresh_jobs else 30,
+        )
+        if payload:
+            st.session_state["fleet_jobs_payload"] = payload
+
+    payload = st.session_state.get("fleet_jobs_payload") or {}
+    if not payload:
+        st.info("No job snapshot available.")
+        st.stop()
+
+    with meta_col:
+        details = []
+        if payload.get("source"):
+            details.append(f"Source: {payload.get('source')}")
+        if payload.get("last_refreshed"):
+            details.append(f"Last refreshed: {payload.get('last_refreshed')}")
+        st.caption(" · ".join(details) if details else "Snapshot metadata unavailable")
+
+    warnings = payload.get("warnings") or []
+    if warnings:
+        with st.expander("Snapshot warnings", expanded=False):
+            for warning in warnings:
+                st.warning(str(warning))
+
+    try:
+        jobs_df_all = zdm_job_records_to_dataframe(payload.get("jobs") or [])
+    except ValueError as exc:
+        st.error("Unexpected /query/jobs payload shape. Restart the backend, then refresh jobs from this page.")
+        st.caption(str(exc))
+        with st.expander("Raw JSON", expanded=False):
+            st.json(payload, expanded=False)
+        st.stop()
+
+    if jobs_df_all.empty:
+        st.info("No jobs returned.")
+        with st.expander("Raw JSON", expanded=False):
+            st.json(payload, expanded=False)
+        st.stop()
+
+    def _filter_options(df: pd.DataFrame, column: str) -> List[str]:
+        if column not in df.columns:
+            return []
+        return sorted([str(value) for value in df[column].dropna().unique() if str(value).strip()])
+
+    def _multiselect_filter(df: pd.DataFrame, column: str, key: str) -> pd.DataFrame:
+        options = _filter_options(df, column)
+        selected = st.multiselect(column, options, key=key)
+        if selected:
+            return df[df[column].isin(selected)]
+        return df
+
+    with st.expander("Filters", expanded=False):
+        filter_cols = st.columns(3)
+        jobs_df = jobs_df_all.copy()
+        filter_fields = [
+            "Project",
+            "Migration Method",
+            "Job Type",
+            "Status",
+            "Source Node",
+            "Source Database",
+            "Target Node",
+            "Target Database",
+            "Current Stage",
+        ]
+        for idx, field in enumerate(filter_fields):
+            with filter_cols[idx % len(filter_cols)]:
+                jobs_df = _multiselect_filter(jobs_df, field, f"fleet_filter_{field}")
+
+    eval_jobs_df = jobs_df[jobs_df["Job Type"] == "EVAL"] if not jobs_df.empty else jobs_df
+    migrate_jobs_df = jobs_df[jobs_df["Job Type"] == "MIGRATE"] if not jobs_df.empty else jobs_df
+    eval_fleet_df = zdm_fleet_dataframe(eval_jobs_df)
+    migrate_fleet_df = zdm_fleet_dataframe(migrate_jobs_df)
+
+    def _render_kpis(title: str, counts: Dict[str, int]) -> None:
+        st.markdown(f"### {title}")
+        cols = st.columns(len(KPI_COLUMNS))
+        for col, label in zip(cols, KPI_COLUMNS):
+            with col:
+                st.metric(label, counts.get(label, 0))
+
+    def _bar_chart(
+        df: pd.DataFrame,
+        index_col: str,
+        group_col: str,
+        title: str,
+        missing_label: Optional[str] = None,
+    ) -> None:
+        st.markdown(f"### {title}")
+        if df.empty or index_col not in df.columns or group_col not in df.columns:
+            st.info("No data available.")
+            return
+        chart_source = df.copy()
+        if missing_label:
+            chart_source[index_col] = chart_source[index_col].apply(
+                lambda value: str(value).strip() if pd.notna(value) and str(value).strip() else missing_label
+            )
+        counts = chart_source.groupby([index_col, group_col]).size().reset_index(name="Count")
+        if counts.empty:
+            st.info("No data available.")
+            return
+        chart_df = counts.pivot(index=index_col, columns=group_col, values="Count").fillna(0)
+        st.bar_chart(chart_df)
+
+    def _job_type_lane(title: str, kpis: Dict[str, int]) -> None:
+        st.markdown(f"## {title}")
+        _render_kpis(f"{title} Jobs", kpis)
+
+    def _column_picker(df: pd.DataFrame, defaults: List[str], key: str) -> List[str]:
+        available = [column for column in defaults if column in df.columns]
+        extras = [column for column in df.columns if column not in available]
+        selected = st.multiselect(
+            "Columns to show",
+            available + extras,
+            default=available,
+            key=key,
+        )
+        return selected or available
+
+    def _sort_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        sorted_df = df.copy()
+        for column in ("Project", "Job Type", "Job ID"):
+            if column not in sorted_df.columns:
+                sorted_df[column] = ""
+        sorted_df["_job_sort"] = pd.to_numeric(sorted_df["Job ID"], errors="coerce").fillna(-1)
+        sorted_df["_project_sort"] = sorted_df["Project"].astype(str).str.lower()
+        sorted_df["_type_sort"] = sorted_df["Job Type"].astype(str).str.lower()
+        sorted_df = sorted_df.sort_values(
+            ["_project_sort", "_type_sort", "_job_sort"],
+            kind="stable",
+        )
+        return sorted_df.drop(columns=["_project_sort", "_type_sort", "_job_sort"])
+
+    def _with_job_links(df: pd.DataFrame, view: str) -> pd.DataFrame:
+        if df.empty or "Job ID" not in df.columns:
+            return df
+        linked = df.copy()
+        linked["Job ID"] = linked["Job ID"].apply(lambda value: _monitor_job_url(value, view))
+        return linked
+
+    def _fleet_status_display_df(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        display_df = df.copy()
+        display_df["Job Type"] = display_df.get("Current Job Type", "")
+        display_df["Job ID"] = ""
+        display_df["Status"] = ""
+        eval_rows = display_df["Job Type"] == "EVAL"
+        migrate_rows = display_df["Job Type"] == "MIGRATE"
+        if "Latest Eval Job" in display_df.columns:
+            display_df.loc[eval_rows, "Job ID"] = display_df.loc[eval_rows, "Latest Eval Job"]
+        if "Latest Eval Status" in display_df.columns:
+            display_df.loc[eval_rows, "Status"] = display_df.loc[eval_rows, "Latest Eval Status"]
+        if "Latest Migrate Job" in display_df.columns:
+            display_df.loc[migrate_rows, "Job ID"] = display_df.loc[migrate_rows, "Latest Migrate Job"]
+        if "Latest Migrate Status" in display_df.columns:
+            display_df.loc[migrate_rows, "Status"] = display_df.loc[migrate_rows, "Latest Migrate Status"]
+        if "Last Start" in display_df.columns:
+            display_df["Started"] = display_df["Last Start"]
+        if "Last End" in display_df.columns:
+            display_df["Ended"] = display_df["Last End"]
+        return display_df
+
+    table_column_labels = {"Result File": "Log File"}
+
+    def _table_section(
+        title: str,
+        df: pd.DataFrame,
+        defaults: List[str],
+        key: str,
+        empty_message: str,
+        link_view: Optional[str] = None,
+    ) -> None:
+        st.markdown(f"### {title}")
+        if df.empty:
+            st.info(empty_message)
+            return
+        table_df = _sort_dashboard_rows(df)
+        if link_view:
+            table_df = _with_job_links(table_df, link_view)
+        display_df = table_df.rename(columns=table_column_labels)
+        display_defaults = [table_column_labels.get(column, column) for column in defaults]
+        columns = _column_picker(display_df, display_defaults, key)
+        column_config = {}
+        if link_view and "Job ID" in columns:
+            column_config["Job ID"] = st.column_config.LinkColumn(
+                "Job ID",
+                display_text=r"job_id=([^&]+)",
+                help="Open in Monitor Jobs",
+            )
+        st_df_safe(display_df[columns], hide_index=True, width='stretch', column_config=column_config)
+
+    tabs = st.tabs(["Overview", "Fleet Status", "Job Details", "Failures", "Raw JSON"])
+    eval_kpis = zdm_job_kpis(jobs_df, "EVAL")
+    migrate_kpis = zdm_job_kpis(jobs_df, "MIGRATE")
+    fleet_status_df = pd.concat(
+        [_fleet_status_display_df(eval_fleet_df), _fleet_status_display_df(migrate_fleet_df)],
+        ignore_index=True,
+    )
+
+    with tabs[0]:
+        eval_lane, migrate_lane = st.columns(2)
+        with eval_lane:
+            _job_type_lane("Eval", eval_kpis)
+        with migrate_lane:
+            _job_type_lane("Migrate", migrate_kpis)
+        st.divider()
+        _bar_chart(jobs_df, "Project", "Status Category", "Jobs By Project", missing_label="Outside ZEUS")
+        chart_cols = st.columns(2)
+        with chart_cols[0]:
+            _bar_chart(
+                jobs_df,
+                "Source Database",
+                "Status Category",
+                "Jobs By Source Database",
+                missing_label="Unknown Source DB",
+            )
+        with chart_cols[1]:
+            _bar_chart(
+                jobs_df,
+                "Source Node",
+                "Status Category",
+                "Jobs By Source Node",
+                missing_label="Unknown Source Node",
+            )
+        _bar_chart(fleet_status_df, "Fleet State", "Job Type", "Current Fleet State")
+
+    with tabs[1]:
+        default_fleet_columns = [
+            "Project",
+            "Job Type",
+            "Job ID",
+            "Status",
+            "Current Stage",
+            "Migration Method",
+            "Source Database",
+            "Target Database",
+            "Source Node",
+            "Target Node",
+            "Started",
+            "Ended",
+        ]
+        _table_section(
+            "Fleet Status",
+            fleet_status_df,
+            default_fleet_columns,
+            "fleet_status_columns",
+            "No fleet rows match the selected filters.",
+            link_view="details",
+        )
+
+    with tabs[2]:
+        default_job_columns = [
+            "Project",
+            "Job Type",
+            "Job ID",
+            "Status",
+            "Current Stage",
+            "Migration Method",
+            "Source Node",
+            "Source Database",
+            "Target Node",
+            "Target Database",
+            "Started",
+            "Ended",
+            "Result File",
+        ]
+        _table_section(
+            "Job Details",
+            jobs_df,
+            default_job_columns,
+            "job_detail_columns",
+            "No jobs match the selected filters.",
+            link_view="details",
+        )
+
+    with tabs[3]:
+        failure_columns = [
+            "Project",
+            "Job Type",
+            "Job ID",
+            "Status",
+            "Current Stage",
+            "Migration Method",
+            "Source Database",
+            "Target Database",
+            "Result File",
+            "Started",
+            "Ended",
+        ]
+        failed_jobs_df = jobs_df[jobs_df["Status Category"] == "Failed"] if not jobs_df.empty else jobs_df
+        _bar_chart(failed_jobs_df, "Current Stage", "Job Type", "Failed Jobs By Stage")
+        _table_section(
+            "Failures",
+            failed_jobs_df,
+            failure_columns,
+            "failure_columns",
+            "No failed jobs match the selected filters.",
+            link_view="logs",
+        )
+
+    with tabs[4]:
+        st.json(payload, expanded=False)
+
+
 elif section == "jobs":
     st.subheader("Monitor Jobs")
     st.caption("Look up job status and tail generated logs for ZDM runs.")
@@ -1685,6 +2042,21 @@ elif section == "jobs":
             return s, "info"
         return (s or "-"), "info"
 
+    deep_link_job_id = query_param("job_id").strip()
+    deep_link_view = "Logs" if query_param("view").lower() == "logs" else "Latest result"
+    if deep_link_job_id:
+        deep_link_key = f"{deep_link_job_id}:{deep_link_view}"
+        if st.session_state.get("jobs_deep_link_key") != deep_link_key:
+            st.session_state["jobs_manual_id"] = deep_link_job_id
+            st.session_state["last_job_id"] = deep_link_job_id
+            st.session_state["jobs_view"] = deep_link_view
+            if deep_link_view == "Logs":
+                st.session_state["jobs_auto_open_log"] = True
+            data = api_request("get", f"/query/{deep_link_job_id}", api_base, auth, quiet=True)
+            if data:
+                st.session_state["last_job_status"] = data
+            st.session_state["jobs_deep_link_key"] = deep_link_key
+
     # -----------------------------
     # Query + Results/Logs (stacked)
     # -----------------------------
@@ -1732,7 +2104,9 @@ elif section == "jobs":
     # -----------------------------
     # Latest result / Logs (tabs below query)
     # -----------------------------
-    tab_status, tab_logs = st.tabs(["Latest result", "Logs"])
+    if "jobs_view" not in st.session_state:
+        st.session_state["jobs_view"] = "Latest result"
+    jobs_view = st.radio("View", ["Latest result", "Logs"], horizontal=True, key="jobs_view")
 
     last_job_id = (st.session_state.get("last_job_id") or "").strip()
 
@@ -1743,7 +2117,7 @@ elif section == "jobs":
         if data:
             st.session_state["last_job_status"] = data
 
-    with tab_status:
+    if jobs_view == "Latest result":
             st.markdown("#### Latest result")
             auto_refresh = st.toggle("Auto-refresh (every 5 seconds)", value=False, key="jobs_autorefresh_latest")
 
@@ -1818,7 +2192,7 @@ elif section == "jobs":
                     st.caption("Auto-refresh requires a newer Streamlit version (st.fragment).")
                 _render_latest()
 
-    with tab_logs:
+    else:
             st.markdown("#### Job logs")
 
             def load_env_value(key: str) -> Optional[str]:
