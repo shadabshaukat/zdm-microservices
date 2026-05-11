@@ -205,6 +205,10 @@ def field_label(label: str, required: bool) -> str:
     return f"{label}{' *' if required else ''}"
 
 
+def saved_job_name(project: str, run_type: str) -> str:
+    return f"{project}_{str(run_type or '').strip().lower()}"
+
+
 def compute_completion(required_items: List[Tuple[str, Any]]) -> Tuple[float, List[str]]:
     missing = [name for name, val in required_items if is_blank(val)]
     total = max(1, len(required_items))
@@ -1359,6 +1363,24 @@ if section == "createjob":
         st.error(f"Create Job currently supports OFFLINE_LOGICAL only. Project migration_method is {project_migration_method}.")
         st.stop()
 
+    job_copy_candidates: List[str] = []
+    if isinstance(saved_jobs_resp, dict):
+        for candidate_project in project_names:
+            if candidate_project == project:
+                continue
+            candidate_record = projects_resp.get(candidate_project)
+            if not isinstance(candidate_record, dict):
+                continue
+            candidate_method = str(candidate_record.get("migration_method") or "").strip().upper()
+            candidate_job = saved_jobs_resp.get(saved_job_name(candidate_project, run_type))
+            if (
+                candidate_method == project_migration_method
+                and isinstance(candidate_job, dict)
+                and str(candidate_job.get("project") or "") == candidate_project
+                and str(candidate_job.get("run_type") or "").strip().upper() == run_type
+            ):
+                job_copy_candidates.append(candidate_project)
+
     target_conn_name = proj_obj.get("target_connection") or proj_obj.get("target") or ""
     target_db_type = ""
     if isinstance(connections_resp, dict) and target_conn_name:
@@ -1372,7 +1394,7 @@ if section == "createjob":
     if _blank(st.session_state.get("runjob_rsp")):
         st.session_state["runjob_rsp"] = default_rsp_name
 
-    auto_base = f"{project}_{run_type.lower()}"
+    auto_base = saved_job_name(project, run_type)
     job_key = "runjob_job_name"
     st.session_state[job_key] = auto_base
 
@@ -1401,6 +1423,59 @@ if section == "createjob":
 
     with left_col:
         st.markdown(f"Migration type (derived from project/response): `{migration_type}`")
+
+        if job_copy_candidates:
+            copy_source_options = ["-- Select project --"] + job_copy_candidates
+            if st.session_state.get("runjob_copy_source_project") not in copy_source_options:
+                st.session_state["runjob_copy_source_project"] = copy_source_options[0]
+
+            copy_col_source, copy_col_action = st.columns([3, 1], vertical_alignment="bottom")
+            with copy_col_source:
+                copy_source_project = st.selectbox(
+                    "Copy from project",
+                    copy_source_options,
+                    key="runjob_copy_source_project",
+                )
+            with copy_col_action:
+                copy_job_clicked = st.button(
+                    "Copy definition",
+                    key="runjob_copy_definition_btn",
+                    disabled=copy_source_project == "-- Select project --",
+                    width='stretch',
+                )
+
+            if copy_job_clicked:
+                copy_payload = {
+                    "source_project": copy_source_project,
+                    "target_project": project,
+                    "migration_method": project_migration_method,
+                    "run_type": run_type,
+                }
+                copy_resp = api_request("post", "/jobsaved/copy", api_base, auth, payload=copy_payload)
+                expected_copy_keys = {"status", "message", "source_project", "target_project", "migration_method", "run_type", "job"}
+                if copy_resp is not None:
+                    copied_job = copy_resp.get("job") if isinstance(copy_resp, dict) else None
+                    expected_job_name = saved_job_name(project, run_type)
+                    valid_copy_response = (
+                        isinstance(copy_resp, dict)
+                        and set(copy_resp.keys()) == expected_copy_keys
+                        and copy_resp.get("status") == "success"
+                        and copy_resp.get("source_project") == copy_source_project
+                        and copy_resp.get("target_project") == project
+                        and copy_resp.get("migration_method") == project_migration_method
+                        and copy_resp.get("run_type") == run_type
+                        and isinstance(copied_job, dict)
+                        and copied_job.get("name") == expected_job_name
+                        and copied_job.get("project") == project
+                        and copied_job.get("run_type") == run_type
+                    )
+                    if not valid_copy_response:
+                        st.error("Invalid job copy API response: expected saved job copy contract.")
+                    else:
+                        st.session_state["runjob_load_pending"] = expected_job_name
+                        st.rerun()
+        else:
+            st.caption("No same-method same-run-type job definitions available.")
 
         if migration_type == "LOGICAL_OFFLINE":
             with st.expander("ZDM CLI args (Logical Offline)", expanded=True):
