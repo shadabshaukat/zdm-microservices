@@ -18,6 +18,9 @@
     "container_context": "SELECT sys_context('userenv','con_name') AS con_name, sys_context('userenv','con_id') AS con_id, sys_context('userenv','cdb_name') AS cdb_name FROM dual",
     "current_container_details": "SELECT con_id, name, open_mode, restricted, open_time FROM v$containers WHERE con_id = sys_context('userenv','con_id')"
   },
+  "logical_common": {
+    "db_profiles": "SELECT profile, DBMS_METADATA.GET_DDL('PROFILE', profile) AS profile_ddl FROM ( SELECT DISTINCT u.profile AS profile FROM dba_users u WHERE u.oracle_maintained = 'N' AND u.account_status LIKE 'OPEN%' AND u.common = 'NO' AND u.profile NOT IN ('DEFAULT', 'ORA_STIG_PROFILE') AND EXISTS ( SELECT 1 FROM dba_profiles p WHERE p.profile = u.profile AND NVL(p.implicit, 'NO') = 'NO' AND NVL(p.inherited, 'NO') = 'NO' ) ORDER BY u.profile )"
+  },
   "logical_offline_extra": {
     "streams_pool_size": "SELECT value AS streams_pool_size_bytes FROM v$parameter WHERE name = 'streams_pool_size'"
   },
