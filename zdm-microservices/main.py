@@ -116,6 +116,13 @@ class CopyResponseFileRequest(BaseModel):
     migration_method: str
 
 
+class CopySavedJobRequest(BaseModel):
+    source_project: str
+    target_project: str
+    migration_method: str
+    run_type: str
+
+
 class SavedJobParams(BaseModel):
     name: str
     project: str
@@ -179,6 +186,17 @@ def _require_migration_method(value: Any) -> str:
     if not migration_method:
         raise HTTPException(status_code=400, detail="migration_method is required")
     return migration_method
+
+
+def _require_run_type(value: Any) -> str:
+    run_type = str(value or "").strip().upper()
+    if run_type not in {"EVAL", "MIGRATE"}:
+        raise HTTPException(status_code=400, detail="run_type must be EVAL or MIGRATE")
+    return run_type
+
+
+def _saved_job_name(project: str, run_type: str) -> str:
+    return f"{project}_{run_type.lower()}"
 
 
 def _is_identity_response_line(line: str) -> bool:
@@ -291,6 +309,67 @@ def _copy_responsefile_from_project(source_project: str, target_project: str, mi
     result["migration_method"] = requested_method
     result["message"] = f"Response file values copied from '{source_project}' to '{target_project}'"
     return result
+
+
+def _copy_saved_job_from_project(source_project: str, target_project: str, migration_method: str, run_type: str) -> Dict[str, Any]:
+    source_project = _validate_project_name(source_project)
+    target_project = _validate_project_name(target_project)
+    requested_method = _require_migration_method(migration_method)
+    requested_run_type = _require_run_type(run_type)
+
+    projects = load_projects()
+    source_record = projects.get(source_project)
+    target_record = projects.get(target_project)
+
+    if not source_record:
+        raise HTTPException(status_code=404, detail=f"Source project '{source_project}' not found")
+    if not target_record:
+        raise HTTPException(status_code=404, detail=f"Target project '{target_project}' not found")
+
+    source_method = _normalize_migration_method(source_record.get("migration_method"))
+    if source_method != requested_method:
+        raise HTTPException(status_code=400, detail="Source project migration_method does not match requested migration_method")
+
+    target_method = _normalize_migration_method(target_record.get("migration_method"))
+    if target_method != requested_method:
+        raise HTTPException(status_code=400, detail="Target project migration_method does not match requested migration_method")
+
+    jobs = load_saved_jobs()
+    source_name = _saved_job_name(source_project, requested_run_type)
+    source_job = jobs.get(source_name)
+    if (
+        not isinstance(source_job, dict)
+        or str(source_job.get("project")) != source_project
+        or str(source_job.get("run_type") or "").strip().upper() != requested_run_type
+    ):
+        raise HTTPException(status_code=404, detail="Source saved job definition not found for requested run_type")
+
+    target_rsp_value = target_record.get("rsp")
+    target_rsp = target_rsp_value.strip() if isinstance(target_rsp_value, str) and target_rsp_value.strip() else f"{target_project}.rsp"
+    target_name = _saved_job_name(target_project, requested_run_type)
+    copied_params = SavedJobParams(
+        **{
+            **source_job,
+            "name": target_name,
+            "project": target_project,
+            "rsp": target_rsp,
+            "run_type": requested_run_type,
+        }
+    )
+    copied_job = copied_params.model_dump()
+
+    jobs[target_name] = copied_job
+    save_saved_jobs(jobs)
+
+    return {
+        "status": "success",
+        "message": f"Saved job definition copied from '{source_project}' to '{target_project}'",
+        "source_project": source_project,
+        "target_project": target_project,
+        "migration_method": requested_method,
+        "run_type": requested_run_type,
+        "job": copied_job,
+    }
 
 _sql_cache: Optional[Dict[str, str]] = None
 
@@ -1359,6 +1438,16 @@ def delete_saved_job(name: str, username: str = Depends(verify_credentials)):
     jobs.pop(name)
     save_saved_jobs(jobs)
     return {"status": "success", "message": f"Saved job '{name}' deleted"}
+
+
+@app.post("/jobsaved/copy")
+def copy_saved_job(payload: CopySavedJobRequest, username: str = Depends(verify_credentials)):
+    return _copy_saved_job_from_project(
+        payload.source_project,
+        payload.target_project,
+        payload.migration_method,
+        payload.run_type,
+    )
 
 
 @app.post("/dbconnection/{name}/uploadTlsWallet")
