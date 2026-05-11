@@ -93,6 +93,33 @@ def _jobs_file_path() -> str:
 def _sql_catalog_paths() -> List[str]:
     return [SQL_CATALOG_FILE]
 
+
+DISCOVERY_MIGRATION_TYPE_BUCKETS: Dict[str, List[str]] = {
+    "logical_offline": ["logical_common", "logical_offline_extra"],
+    "logical_online": ["logical_common"],
+    "physical_offline": ["physical_common"],
+    "physical_online": ["physical_common", "physical_online_extra"],
+    "hybrid_offline": ["physical_common", "hybrid_offline_extra"],
+}
+
+
+def _allowed_discovery_migration_types() -> str:
+    return ", ".join(DISCOVERY_MIGRATION_TYPE_BUCKETS.keys())
+
+
+def normalize_discovery_migration_type(value: Optional[str]) -> str:
+    normalized = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if not normalized or normalized not in DISCOVERY_MIGRATION_TYPE_BUCKETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid migration_type. Allowed values: {_allowed_discovery_migration_types()}",
+        )
+    return normalized
+
+
+def discovery_sql_buckets(migration_type: str) -> List[str]:
+    return list(DISCOVERY_MIGRATION_TYPE_BUCKETS[normalize_discovery_migration_type(migration_type)])
+
 # -----------------------------
 # Models used across endpoints
 # -----------------------------
@@ -956,13 +983,28 @@ def build_dsn(
     )
 
 
+def _json_safe_db_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_safe_db_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe_db_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _json_safe_db_value(item) for key, item in value.items()}
+    read = getattr(value, "read", None)
+    if callable(read):
+        return read()
+    return str(value)
+
+
 def fetch_one_dict(cursor, sql: str) -> Dict[str, Any]:
     cursor.execute(sql)
     row = cursor.fetchone()
     if row is None:
         return {}
     columns = [col[0] for col in cursor.description]
-    return {columns[i]: row[i] for i in range(len(columns))}
+    return {columns[i]: _json_safe_db_value(row[i]) for i in range(len(columns))}
 
 
 def fetch_all_dicts(cursor, sql: str) -> List[Dict[str, Any]]:
@@ -973,7 +1015,7 @@ def fetch_all_dicts(cursor, sql: str) -> List[Dict[str, Any]]:
     columns = [col[0] for col in cursor.description]
     result = []
     for row in rows:
-        result.append({columns[i]: row[i] for i in range(len(columns))})
+        result.append({columns[i]: _json_safe_db_value(row[i]) for i in range(len(columns))})
     return result
 
 
@@ -984,8 +1026,8 @@ def fetch_any(cursor, sql: str) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
         return []
     columns = [col[0] for col in cursor.description]
     if len(rows) == 1:
-        return {columns[i]: rows[0][i] for i in range(len(columns))}
-    return [{columns[i]: row[i] for i in range(len(columns))} for row in rows]
+        return {columns[i]: _json_safe_db_value(rows[0][i]) for i in range(len(columns))}
+    return [{columns[i]: _json_safe_db_value(row[i]) for i in range(len(columns))} for row in rows]
 
 
 def fetch_optional(cursor, sql_key: str, mode: str = "any") -> Any:
@@ -999,6 +1041,12 @@ def fetch_optional(cursor, sql_key: str, mode: str = "any") -> Any:
     except Exception as exc:
         # Non-fatal: record error for diagnostics
         return {"error": str(exc)}
+
+
+def fetch_discovery_extra_query(cursor, key: str, sql: str) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    if key == "db_profiles":
+        return fetch_all_dicts(cursor, sql)
+    return fetch_any(cursor, sql)
 
 
 def get_connection_dir(name: str) -> str:
@@ -1025,7 +1073,7 @@ def _collect_db_snapshot(
     ssl_server_dn_match: Optional[bool] = None,
     migration_type: Optional[str] = None,
 ) -> Dict[str, Any]:
-    mig = (migration_type or "logical_offline").strip().lower().replace(" ", "_")
+    mig = normalize_discovery_migration_type(migration_type)
     oracledb = require_oracledb()
     dsn = build_dsn(
         conn_info["host"],
@@ -1074,20 +1122,14 @@ def _collect_db_snapshot(
             snapshot["rac_info"] = fetch_optional(cursor, "rac_info", mode="one"); raw_queries["rac_info"] = snapshot["rac_info"]
 
             extras: Dict[str, Any] = {}
-            bucket_map = {
-                "logical_offline": ["logical_offline_extra"],
-                "physical_offline": ["physical_common"],
-                "physical_online": ["physical_common", "physical_online_extra"],
-                "hybrid": ["physical_common", "hybrid_offline_extra"],
-            }
-            for bucket_name in bucket_map.get(mig, []):
+            for bucket_name in discovery_sql_buckets(mig):
                 bucket_sqls = get_sql_bucket(bucket_name)
                 if not bucket_sqls:
                     continue
                 extras[bucket_name] = {}
                 for key, sql in bucket_sqls.items():
                     try:
-                        extras[bucket_name][key] = fetch_any(cursor, sql)
+                        extras[bucket_name][key] = fetch_discovery_extra_query(cursor, key, sql)
                         raw_queries[f"{bucket_name}.{key}"] = extras[bucket_name][key]
                     except Exception as exc:
                         extras[bucket_name][key] = {"error": str(exc)}
@@ -1343,7 +1385,7 @@ class DBConnectionCheckParams(BaseModel):
 class DBConnectionDiscoverParams(BaseModel):
     name: str
     password: str  # required for discovery
-    migration_type: Optional[str] = "logical_offline"  # logical_offline, physical_offline, physical_online, hybrid
+    migration_type: str  # logical_offline, logical_online, physical_offline, physical_online, hybrid_offline
     role: Optional[str] = None  # optional tag for future compare views
 
 
@@ -1468,6 +1510,9 @@ def upload_tls_wallet(name: str, wallet: UploadFile = File(...), username: str =
 
 
 def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDiscoverParams], run_snapshot: bool, migration_type: Optional[str] = None):
+    if run_snapshot:
+        migration_type = normalize_discovery_migration_type(migration_type)
+
     conn_info = _load_connection_or_404(params.name)
     test_password = params.password
     wallet_location: Optional[str] = None

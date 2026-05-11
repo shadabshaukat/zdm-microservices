@@ -2422,6 +2422,15 @@ elif section == "discovery":
 
     conns = api_request("get", "/dbconnections", api_base, auth, quiet=True) or {}
     conn_names = ["-- Select connection --"] + (list(conns.keys()) if isinstance(conns, dict) else [])
+    discovery_migration_types = {
+        "Logical Offline": "logical_offline",
+        "Logical Online": "logical_online",
+        "Physical Online": "physical_online",
+        "Physical Offline": "physical_offline",
+        "Hybrid Offline": "hybrid_offline",
+    }
+    if st.session_state.get("disc_mt") not in discovery_migration_types:
+        st.session_state["disc_mt"] = "Logical Offline"
 
     col_sel, col_pw, col_mt = st.columns([0.5, 0.25, 0.25], vertical_alignment="bottom")
     with col_sel:
@@ -2429,11 +2438,8 @@ elif section == "discovery":
     with col_pw:
         conn_pw = st.text_input("Password", type="password", key="disc_pw", help="Password for the selected connection user")
     with col_mt:
-        migration_type = st.selectbox(
-            "Migration type (optional)",
-            ["", "LOGICAL_OFFLINE", "PHYSICAL_ONLINE", "PHYSICAL_OFFLINE", "HYBRID_OFFLINE"],
-            key="disc_mt",
-        )
+        selected_migration_label = st.selectbox("Migration type", list(discovery_migration_types.keys()), key="disc_mt")
+        migration_type = discovery_migration_types[selected_migration_label]
 
     # -------- helpers (normalize once, then render) --------
     def _format_bytes(val: Optional[float]) -> str:
@@ -2512,6 +2518,28 @@ elif section == "discovery":
             "streams_pool_hint": streams_hint,
         }
 
+    def discovery_profile_rows(raw: Dict[str, Any]) -> Tuple[List[Dict[str, str]], Optional[str]]:
+        extras = raw.get("extras") or {}
+        logical_common = extras.get("logical_common") or {}
+        profiles = logical_common.get("db_profiles")
+        if profiles is None:
+            return [], None
+        if isinstance(profiles, dict) and profiles.get("error"):
+            return [], str(profiles.get("error"))
+        if not isinstance(profiles, list):
+            raise ValueError("Unexpected discovery profile payload shape: expected extras.logical_common.db_profiles list")
+
+        rows: List[Dict[str, str]] = []
+        for row in profiles:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("PROFILE"), str)
+                or not isinstance(row.get("PROFILE_DDL"), str)
+            ):
+                raise ValueError("Unexpected discovery profile payload shape: expected PROFILE and PROFILE_DDL strings")
+            rows.append({"PROFILE": row["PROFILE"], "PROFILE_DDL": row["PROFILE_DDL"]})
+        return rows, None
+
     def cloud_identity_record(raw: Any) -> Dict[str, Any]:
         rows = raw if isinstance(raw, list) else [raw]
 
@@ -2556,9 +2584,7 @@ elif section == "discovery":
         if selected_conn == "-- Select connection --":
             st.error("Select a connection.")
         else:
-            payload = {"name": selected_conn, "password": conn_pw or ""}
-            if migration_type:
-                payload["migration_type"] = migration_type
+            payload = {"name": selected_conn, "password": conn_pw or "", "migration_type": migration_type}
             data = api_request("post", "/dbconnection/discover", api_base, auth, payload=payload)
             if data:
                 snapshot = data.get("snapshot") if isinstance(data, dict) else data
@@ -2619,9 +2645,13 @@ elif section == "discovery":
 
         tab_names = ["Readiness", "Summary", "Schemas", "Tablespaces", "Directories", "NLS & TZ"]
         cloud_tab_idx = None
+        profiles_tab_idx = None
         if cloud_identity:
             cloud_tab_idx = len(tab_names)
             tab_names.append("Cloud Identity")
+        if str(normalized.get("migration_type") or "").startswith("LOGICAL_"):
+            profiles_tab_idx = len(tab_names)
+            tab_names.append("Profiles")
         tab_names.append("Raw JSON")
         tabs = st.tabs(tab_names)
 
@@ -2723,6 +2753,48 @@ elif section == "discovery":
                 ]
                 cloud_grid = pd.DataFrame(cloud_grid_rows)
                 st_df_safe(cloud_grid, hide_index=True, width='stretch')
+
+        if profiles_tab_idx is not None:
+            with tabs[profiles_tab_idx]:
+                try:
+                    profile_rows, profile_error = discovery_profile_rows(snapshot)
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    if profile_error:
+                        st.error(f"Profile discovery query failed: {profile_error}")
+                    elif profile_rows:
+                        script = "\n\n".join(
+                            row["PROFILE_DDL"].rstrip().rstrip(";") + ";"
+                            for row in profile_rows
+                        )
+                        count_col, download_col = st.columns([0.7, 0.3], vertical_alignment="center")
+                        with count_col:
+                            st.caption(
+                                f"{len(profile_rows)} custom profile"
+                                f"{'s' if len(profile_rows) != 1 else ''} returned"
+                            )
+                        with download_col:
+                            st.download_button(
+                                "Download all profile DDL",
+                                script,
+                                file_name=f"{con_name}_profiles.sql",
+                                mime="text/sql",
+                                width='stretch',
+                            )
+                        for row in profile_rows:
+                            with st.expander(row["PROFILE"]):
+                                profile_script = row["PROFILE_DDL"].rstrip().rstrip(";") + ";"
+                                st.download_button(
+                                    "Download profile SQL",
+                                    profile_script,
+                                    file_name=f"{row['PROFILE']}.sql",
+                                    mime="text/sql",
+                                    key=f"download-profile-{row['PROFILE']}",
+                                )
+                                st.code(row["PROFILE_DDL"], language="sql")
+                    else:
+                        st.info("No custom profile DDL returned for this logical discovery snapshot.")
 
         with tabs[-1]:
             st.json(snapshot, expanded=False)
