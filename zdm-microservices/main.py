@@ -7,12 +7,15 @@
 ############################################################
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Body, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
+try:
+    from pydantic import ConfigDict
+except ImportError:
+    ConfigDict = None
 import json
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Union, Tuple
 from pathlib import Path
@@ -21,11 +24,36 @@ import os
 import re
 import shlex
 import hashlib
+import shutil
 from passlib.context import CryptContext
 try:
     from .backend_auth import load_users_hashed, AuthConfigError  # package-style
 except ImportError:
     from backend_auth import load_users_hashed, AuthConfigError  # script-style
+try:
+    from .zdm_rules.catalog import get_profile  # package-style
+    from .zdm_rules.environments import (
+        CONNECTION_ENVIRONMENTS,
+        db_connection_type_supports_role,
+        normalize_connection_role,
+        normalize_connection_type,
+        project_environment_response_values,
+        project_logical_scenario_values,
+    )
+    from .zdm_rules.jobs import build_migrate_command
+    from .zdm_rules.responsefile import build_response_file_lines
+except ImportError:
+    from zdm_rules.catalog import get_profile  # script-style
+    from zdm_rules.environments import (
+        CONNECTION_ENVIRONMENTS,
+        db_connection_type_supports_role,
+        normalize_connection_role,
+        normalize_connection_type,
+        project_environment_response_values,
+        project_logical_scenario_values,
+    )
+    from zdm_rules.jobs import build_migrate_command
+    from zdm_rules.responsefile import build_response_file_lines
 
 app = FastAPI()
 
@@ -70,7 +98,6 @@ os.makedirs(MIGRATION_BASE, exist_ok=True)
 
 
 SQL_CATALOG_FILE = os.path.join(os.path.dirname(__file__), "sql_catalog.json")  # repo-managed catalog
-PROJECTS_FILE = os.path.join(os.path.dirname(__file__), "projects.json")  # legacy location
 
 def _connections_file_path() -> str:
     target_dir = os.path.join(MIGRATION_BASE, "connections")
@@ -95,11 +122,11 @@ def _sql_catalog_paths() -> List[str]:
 
 
 DISCOVERY_MIGRATION_TYPE_BUCKETS: Dict[str, List[str]] = {
-    "logical_offline": ["logical_common", "logical_offline_extra"],
-    "logical_online": ["logical_common"],
-    "physical_offline": ["physical_common"],
-    "physical_online": ["physical_common", "physical_online_extra"],
-    "hybrid_offline": ["physical_common", "hybrid_offline_extra"],
+    "OFFLINE_LOGICAL": ["logical_common", "logical_offline_extra"],
+    "ONLINE_LOGICAL": ["logical_common"],
+    "OFFLINE_PHYSICAL": ["physical_common"],
+    "ONLINE_PHYSICAL": ["physical_common", "physical_online_extra"],
+    "HYBRID_OFFLINE": ["physical_common", "hybrid_offline_extra"],
 }
 
 
@@ -108,7 +135,7 @@ def _allowed_discovery_migration_types() -> str:
 
 
 def normalize_discovery_migration_type(value: Optional[str]) -> str:
-    normalized = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    normalized = str(value or "").strip().upper().replace(" ", "_").replace("-", "_")
     if not normalized or normalized not in DISCOVERY_MIGRATION_TYPE_BUCKETS:
         raise HTTPException(
             status_code=400,
@@ -123,51 +150,55 @@ def discovery_sql_buckets(migration_type: str) -> List[str]:
 # -----------------------------
 # Models used across endpoints
 # -----------------------------
-class LogFileParams(BaseModel):
-    file_path: str
+class StrictRequestModel(BaseModel):
+    if ConfigDict:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class LogFileReadParams(StrictRequestModel):
+    job_id: str
+    name: str
 
 # -----------------------------
 # Write-only Response File API
 # -----------------------------
 _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_LOGICAL_SOURCE_ENV_KEYS = {
+    "SOURCEDATABASE_ENVIRONMENT_NAME",
+    "SOURCEDATABASE_ENVIRONMENT_DBTYPE",
+}
+_LOGICAL_TARGET_ENV_KEYS = {"TARGETDATABASE_DBTYPE"}
+_PHYSICAL_TARGET_ENV_KEYS = {"PLATFORM_TYPE"}
 
-class WriteResponseFileRequest(BaseModel):
+class ResponseFileRequest(StrictRequestModel):
     project: str
-    lines: List[str]
-    migration_method: Optional[str] = None
+    migration_method: str
+    values: Dict[str, Any]
 
 
-class CopyResponseFileRequest(BaseModel):
+class CopyResponseFileRequest(StrictRequestModel):
     source_project: str
     target_project: str
     migration_method: str
 
 
-class CopySavedJobRequest(BaseModel):
+class CopySavedJobRequest(StrictRequestModel):
     source_project: str
     target_project: str
     migration_method: str
     run_type: str
 
 
-class SavedJobParams(BaseModel):
+class SavedJobParams(StrictRequestModel):
     name: str
     project: str
     rsp: Optional[str] = None
-    run_type: str = "EVAL"
-    sourcedb: Optional[str] = None
-    sourcesid: Optional[str] = None
-    sourcenode: Optional[str] = None
-    srcauth: Optional[str] = None
-    srcarg1: Optional[str] = None
-    srcarg2: Optional[str] = None
-    srcarg3: Optional[str] = None
-    sourcesyswallet: Optional[str] = None
-    targetnode: Optional[str] = None
-    tgtauth: Optional[str] = None
-    tgtarg1: Optional[str] = None
-    tgtarg2: Optional[str] = None
-    tgtarg3: Optional[str] = None
+    run_type: str
+    job_parameters: Optional[Dict[str, Any]] = None
     advisor_mode: Optional[str] = None  # NONE|ADVISOR|IGNORE_ADVISOR|SKIP_ADVISOR
     flow_control: Optional[str] = None  # NONE|PAUSE_AFTER|STOP_AFTER
     flow_phase: Optional[str] = None
@@ -176,6 +207,49 @@ class SavedJobParams(BaseModel):
     schedule: Optional[str] = None
     listphases: Optional[bool] = False
     custom_args: Optional[List[str]] = None
+
+
+def _model_to_dict(model: BaseModel) -> Dict[str, Any]:
+    dump = getattr(model, "model_dump", None)
+    if callable(dump):
+        return dump()
+    return model.dict()
+
+
+def _model_to_supplied_dict(model: BaseModel) -> Dict[str, Any]:
+    dump = getattr(model, "model_dump", None)
+    if callable(dump):
+        return dump(exclude_unset=True)
+    return model.dict(exclude_unset=True)
+
+
+def _validate_upload_filename(filename: Optional[str]) -> str:
+    candidate = str(filename or "").strip()
+    if (
+        not candidate
+        or candidate in {".", ".."}
+        or "/" in candidate
+        or "\\" in candidate
+        or candidate != os.path.basename(candidate)
+        or "\x00" in candidate
+    ):
+        raise HTTPException(status_code=400, detail="Invalid wallet filename")
+    return candidate
+
+
+_TLS_WALLET_STORAGE_NAMES = {
+    ".zip": "tls_wallet.zip",
+    ".p12": "tls_wallet.p12",
+}
+
+
+def _tls_wallet_storage_filename(filename: Optional[str]) -> str:
+    uploaded_name = _validate_upload_filename(filename)
+    suffix = Path(uploaded_name).suffix.lower()
+    if suffix not in _TLS_WALLET_STORAGE_NAMES:
+        raise HTTPException(status_code=400, detail="TLS wallet must be a .zip or .p12 file")
+    return _TLS_WALLET_STORAGE_NAMES[suffix]
+
 
 def _validate_project_name(project: str) -> str:
     project = (project or "").strip()
@@ -191,17 +265,304 @@ def _validate_project_name(project: str) -> str:
         )
     return project
 
-def _normalize_rsp_line_value(value: Any) -> str:
-    # Keep this intentionally minimal and ZDM-agnostic.
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, str):
-        if value.lower() == "true":
-            return "TRUE"
-        if value.lower() == "false":
-            return "FALSE"
-        return value
-    return str(value)
+
+def _validate_connection_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="connection name is required")
+    if any(x in name for x in ("/", "\\", "..")):
+        raise HTTPException(status_code=400, detail="connection name contains illegal path characters")
+    if not _SAFE_PROJECT_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="connection name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        )
+    return name
+
+
+def _validate_connection_role(role: Optional[str]) -> Optional[str]:
+    if role is None:
+        return None
+    raw = str(role).strip().lower()
+    if not raw:
+        return None
+    normalized = normalize_connection_role(raw)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="connection_role must be source or target")
+    return normalized
+
+
+def _validate_connection_type(db_type: Optional[str]) -> Optional[str]:
+    if db_type is None:
+        return None
+    normalized = normalize_connection_type(db_type)
+    if not normalized:
+        return None
+    if normalized not in CONNECTION_ENVIRONMENTS:
+        raise HTTPException(status_code=400, detail="db_type must be a ZEUS connection environment")
+    return normalized
+
+
+def _validate_connection_type_for_role(db_type: Optional[str], role: Optional[str]) -> None:
+    normalized_type = _validate_connection_type(db_type)
+    normalized_role = _validate_connection_role(role)
+    if not normalized_type or not normalized_role:
+        return
+    if not db_connection_type_supports_role(normalized_type, normalized_role):
+        raise HTTPException(
+            status_code=400,
+            detail=f"db_type '{normalized_type}' is not valid for {normalized_role} connections",
+        )
+
+
+def _validate_connection_record_contract(payload: Dict[str, Any]) -> None:
+    normalized_role = _validate_connection_role(payload.get("connection_role"))
+    if not normalized_role:
+        raise HTTPException(status_code=400, detail="connection_role is required")
+
+    normalized_type = _validate_connection_type(payload.get("db_type"))
+    if not normalized_type:
+        raise HTTPException(status_code=400, detail="db_type is required")
+
+    _validate_connection_type_for_role(normalized_type, normalized_role)
+    payload["connection_role"] = normalized_role
+    payload["db_type"] = normalized_type
+
+
+def _api_contract_error(endpoint: str, detail: str) -> None:
+    raise HTTPException(status_code=500, detail=f"{endpoint} API contract error: {detail}")
+
+
+def _api_record_keys(
+    record: Dict[str, Any],
+    endpoint: str,
+    record_name: str,
+    required: set[str],
+    optional: set[str],
+    *,
+    allow_extra: bool = False,
+) -> None:
+    keys = {str(key) for key in record.keys()}
+    missing = sorted(required - keys)
+    extra = sorted(keys - required - optional)
+    details = []
+    if missing:
+        details.append("missing " + ", ".join(missing))
+    if extra and not allow_extra:
+        details.append("unexpected " + ", ".join(extra))
+    if details:
+        _api_contract_error(endpoint, f"{record_name} has invalid fields ({'; '.join(details)})")
+
+
+def _require_api_text(record: Dict[str, Any], endpoint: str, record_name: str, key: str) -> None:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        _api_contract_error(endpoint, f"{record_name}.{key} must be a non-empty string")
+
+
+def _optional_api_text(record: Dict[str, Any], endpoint: str, record_name: str, key: str) -> None:
+    value = record.get(key)
+    if value is not None and not isinstance(value, str):
+        _api_contract_error(endpoint, f"{record_name}.{key} must be a string or null")
+
+
+def _project_api_record(record_name: str, record: Any, endpoint: str = "GET /projects") -> Dict[str, Any]:
+    if not isinstance(record, dict):
+        _api_contract_error(endpoint, f"{record_name} must be an object")
+    required = {"name", "rsp", "source_connection", "target_connection"}
+    optional = {"migration_method", "jobs"}
+    _api_record_keys(record, endpoint, record_name, required, optional)
+    if record.get("name") != record_name:
+        _api_contract_error(endpoint, f"{record_name}.name must match its record key")
+    _optional_api_text(record, endpoint, record_name, "rsp")
+    _require_api_text(record, endpoint, record_name, "source_connection")
+    _require_api_text(record, endpoint, record_name, "target_connection")
+    _optional_api_text(record, endpoint, record_name, "migration_method")
+    jobs = record.get("jobs")
+    if jobs is not None:
+        if not isinstance(jobs, dict):
+            _api_contract_error(endpoint, f"{record_name}.jobs must be an object")
+        for run_type, job_ids in jobs.items():
+            if str(run_type).lower() not in {"eval", "migrate"}:
+                _api_contract_error(endpoint, f"{record_name}.jobs has unsupported run type {run_type}")
+            if not isinstance(job_ids, list) or not all(isinstance(job_id, str) for job_id in job_ids):
+                _api_contract_error(endpoint, f"{record_name}.jobs.{run_type} must be a list of strings")
+    return dict(record)
+
+
+def _projects_api_response() -> Dict[str, Dict[str, Any]]:
+    projects = load_projects()
+    return {
+        name: _project_api_record(name, record)
+        for name, record in projects.items()
+    }
+
+
+def _dbconnection_api_record(
+    record_name: str,
+    record: Any,
+    endpoint: str = "GET /dbconnections",
+    *,
+    allow_storage_extra: bool = False,
+) -> Dict[str, Any]:
+    if not isinstance(record, dict):
+        _api_contract_error(endpoint, f"{record_name} must be an object")
+    required = {
+        "name",
+        "host",
+        "port",
+        "service_name",
+        "username",
+        "db_type",
+        "connection_role",
+        "protocol",
+        "allow_tls_without_wallet",
+    }
+    optional = {"tls_wallet_uploaded_dir"}
+    _api_record_keys(record, endpoint, record_name, required, optional, allow_extra=allow_storage_extra)
+    if record.get("name") != record_name:
+        _api_contract_error(endpoint, f"{record_name}.name must match its record key")
+    _require_api_text(record, endpoint, record_name, "host")
+    port = record.get("port")
+    if not isinstance(port, int) or isinstance(port, bool):
+        _api_contract_error(endpoint, f"{record_name}.port must be an integer")
+    _require_api_text(record, endpoint, record_name, "service_name")
+    _require_api_text(record, endpoint, record_name, "username")
+    _require_api_text(record, endpoint, record_name, "db_type")
+    role = record.get("connection_role")
+    if role not in {"source", "target"}:
+        _api_contract_error(endpoint, f"{record_name}.connection_role must be source or target")
+    protocol = record.get("protocol")
+    if protocol not in {"TCP", "TCPS"}:
+        _api_contract_error(endpoint, f"{record_name}.protocol must be TCP or TCPS")
+    if not isinstance(record.get("allow_tls_without_wallet"), bool):
+        _api_contract_error(endpoint, f"{record_name}.allow_tls_without_wallet must be a boolean")
+    _optional_api_text(record, endpoint, record_name, "tls_wallet_uploaded_dir")
+    response_keys = [
+        "name",
+        "host",
+        "port",
+        "service_name",
+        "username",
+        "db_type",
+        "connection_role",
+        "protocol",
+        "allow_tls_without_wallet",
+        "tls_wallet_uploaded_dir",
+    ]
+    return {
+        key: record[key]
+        for key in response_keys
+        if key in record
+    }
+
+
+def _dbconnections_api_response() -> Dict[str, Dict[str, Any]]:
+    connections = load_connections()
+    return {
+        name: _dbconnection_api_record(name, record, allow_storage_extra=True)
+        for name, record in connections.items()
+    }
+
+
+def _require_project_connection_role(
+    connections: Dict[str, Dict[str, Any]],
+    connection_name: Optional[str],
+    role: str,
+    field_name: str,
+) -> str:
+    name = _validate_connection_name(connection_name or "")
+    info = connections.get(name)
+    if not isinstance(info, dict):
+        raise HTTPException(status_code=400, detail=f"{field_name} references an unknown connection")
+    if normalize_connection_role(info.get("connection_role")) != role:
+        raise HTTPException(status_code=400, detail=f"{field_name} must reference a {role} connection")
+    _validate_connection_type_for_role(info.get("db_type"), role)
+    return name
+
+
+def _project_environment_values_or_400(
+    project_record: Dict[str, Any],
+    connections: Dict[str, Dict[str, Any]],
+    migration_method: str,
+) -> Dict[str, str]:
+    _require_project_connection_role(
+        connections,
+        project_record.get("source_connection"),
+        "source",
+        "source_connection",
+    )
+    _require_project_connection_role(
+        connections,
+        project_record.get("target_connection"),
+        "target",
+        "target_connection",
+    )
+    return project_environment_response_values(project_record, connections, migration_method)
+
+
+def _reject_project_environment_conflicts(
+    values: Dict[str, Any],
+    environment_values: Dict[str, str],
+    migration_method: str,
+) -> None:
+    method = _normalize_migration_method(migration_method)
+    controlled_by_source = _LOGICAL_SOURCE_ENV_KEYS if method.endswith("_LOGICAL") else set()
+    controlled_by_target = set()
+    if method.endswith("_LOGICAL"):
+        controlled_by_target.update(_LOGICAL_TARGET_ENV_KEYS)
+    elif method.endswith("_PHYSICAL"):
+        controlled_by_target.update(_PHYSICAL_TARGET_ENV_KEYS)
+
+    for key in sorted(controlled_by_source | controlled_by_target):
+        if key not in values or values.get(key) in (None, ""):
+            continue
+        expected = environment_values.get(key)
+        if expected and _normalize_migration_method(values.get(key)) == _normalize_migration_method(expected):
+            continue
+        owner = "source" if key in controlled_by_source else "target"
+        if expected:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} conflicts with project {owner} connection; expected {expected}",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"{key} is controlled by project {owner} connection and must be omitted",
+        )
+
+
+def _validate_project_medium_selection(
+    profile: Any,
+    project_record: Dict[str, Any],
+    connections: Dict[str, Dict[str, Any]],
+    values: Dict[str, Any],
+) -> None:
+    medium = _normalize_migration_method(values.get("DATA_TRANSFER_MEDIUM"))
+    if not medium or medium not in profile.medium_keys():
+        return
+
+    if profile.method.endswith("_LOGICAL"):
+        allowed = profile.enabled_medium_keys(
+            project_logical_scenario_values(project_record, connections)
+        )
+    elif profile.method.endswith("_PHYSICAL"):
+        environment_values = project_environment_response_values(project_record, connections, profile.method)
+        platform = environment_values.get("PLATFORM_TYPE") or values.get("PLATFORM_TYPE")
+        allowed = profile.platform_medium_keys(platform)
+        if not allowed:
+            allowed = profile.enabled_medium_keys({"PLATFORM_TYPE": platform})
+    else:
+        allowed = []
+
+    if allowed and medium not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"DATA_TRANSFER_MEDIUM {medium} is not available for project source/target "
+                f"environment; allowed values: {', '.join(allowed)}"
+            ),
+        )
 
 
 def _normalize_migration_method(value: Any) -> str:
@@ -222,8 +583,108 @@ def _require_run_type(value: Any) -> str:
     return run_type
 
 
+def _project_profile_or_400(project: str):
+    project_record = _load_project_or_404(project)
+    migration_method = _normalize_migration_method(project_record.get("migration_method"))
+    if not migration_method:
+        raise HTTPException(status_code=400, detail="Project migration_method is required")
+    try:
+        return get_profile(migration_method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _compact_job_parameters(value: Any) -> Dict[str, Any]:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="job_parameters must be an object")
+    return {
+        str(key): item
+        for key, item in value.items()
+        if item not in (None, "", [])
+    }
+
+
+def _validate_job_parameter_keys(profile: Any, job_parameters: Dict[str, Any]) -> None:
+    allowed = set(profile.common_job_field_keys())
+    unknown = sorted(key for key in job_parameters if key not in allowed)
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported job parameter for {profile.method}: {', '.join(unknown)}",
+        )
+
+
 def _saved_job_name(project: str, run_type: str) -> str:
     return f"{project}_{run_type.lower()}"
+
+
+_SAVED_JOB_API_FIELDS = {
+    "name",
+    "project",
+    "run_type",
+    "rsp",
+    "job_parameters",
+    "advisor_mode",
+    "flow_control",
+    "flow_phase",
+    "genfixup",
+    "ignore",
+    "schedule",
+    "listphases",
+    "custom_args",
+}
+
+
+def _validate_saved_job_api_record(record_name: str, job: Any) -> Dict[str, Any]:
+    if not isinstance(job, dict):
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' storage record must be an object")
+
+    keys = set(str(key) for key in job.keys())
+    if keys != _SAVED_JOB_API_FIELDS:
+        missing = sorted(_SAVED_JOB_API_FIELDS - keys)
+        extra = sorted(keys - _SAVED_JOB_API_FIELDS)
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unexpected " + ", ".join(extra))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved job '{record_name}' violates API contract: {'; '.join(details)}",
+        )
+
+    run_type = str(job.get("run_type") or "").strip().upper()
+    if run_type not in {"EVAL", "MIGRATE"}:
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' has invalid run_type")
+    try:
+        project = _validate_project_name(job.get("project") or "")
+    except HTTPException as exc:
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' has invalid project") from exc
+    expected_name = _saved_job_name(project, run_type)
+    if record_name != expected_name or job.get("name") != expected_name:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved job '{record_name}' violates API contract: expected name '{expected_name}'",
+        )
+    if not isinstance(job.get("job_parameters"), dict):
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' job_parameters must be an object")
+    if job.get("ignore") is not None and not isinstance(job.get("ignore"), list):
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' ignore must be a list")
+    if job.get("custom_args") is not None and not isinstance(job.get("custom_args"), list):
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' custom_args must be a list")
+    if job.get("listphases") is not None and not isinstance(job.get("listphases"), bool):
+        raise HTTPException(status_code=500, detail=f"Saved job '{record_name}' listphases must be a boolean")
+    return job
+
+
+def _saved_jobs_api_response() -> Dict[str, Dict[str, Any]]:
+    jobs = load_saved_jobs()
+    return {
+        name: _validate_saved_job_api_record(name, job)
+        for name, job in jobs.items()
+    }
 
 
 def _is_identity_response_line(line: str) -> bool:
@@ -234,9 +695,48 @@ def _is_identity_response_line(line: str) -> bool:
     return key in {"project", "filename"}
 
 
-def _responsefile_path(project: str) -> str:
-    response_dir = get_responses_dir(project, required=True)
+def _responsefile_path(project: str, create_dir: bool = True) -> str:
+    project = _validate_project_name(project)
+    if create_dir:
+        response_dir = get_responses_dir(project, required=True)
+    else:
+        response_dir = os.path.join(MIGRATION_BASE, "responses", project)
     return os.path.join(response_dir, f"{project}.rsp")
+
+
+def _validate_project_responsefile_name(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if (
+        not candidate
+        or candidate in {".", ".."}
+        or os.path.isabs(candidate)
+        or "/" in candidate
+        or "\\" in candidate
+        or candidate != os.path.basename(candidate)
+        or "\x00" in candidate
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="rsp must be a project-owned response file name",
+        )
+    return candidate
+
+
+def _project_responsefile_path(project: str, rsp_name: Any) -> str:
+    project = _validate_project_name(project)
+    filename = _validate_project_responsefile_name(rsp_name)
+    response_dir = Path(get_responses_dir(project, required=True))
+    rsp_path = response_dir / filename
+    resolved_response_dir = response_dir.resolve(strict=False)
+    resolved_rsp_path = rsp_path.resolve(strict=False)
+    try:
+        resolved_rsp_path.relative_to(resolved_response_dir)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="rsp must be a project-owned response file name",
+        ) from exc
+    return str(rsp_path)
 
 
 def _sync_project_response_metadata(project: str, migration_method: Optional[str] = None) -> None:
@@ -253,23 +753,31 @@ def _sync_project_response_metadata(project: str, migration_method: Optional[str
     save_projects(projects)
 
 
+def _validate_responsefile_rendered_lines(lines_in: List[str]) -> List[str]:
+    if not isinstance(lines_in, list) or not all(isinstance(x, str) for x in lines_in):
+        raise HTTPException(status_code=400, detail="lines must be a list of strings")
+
+    cleaned: List[str] = []
+    for index, line in enumerate(lines_in, start=1):
+        if "\n" in line or "\r" in line:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Response file line {index} must not contain newline characters",
+            )
+        if line.strip() == "":
+            continue
+        cleaned.append(line)
+
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="lines must contain at least one non-empty line")
+    return cleaned
+
+
 def _write_responsefile_lines(project: str, lines_in: List[str], migration_method: Optional[str] = None) -> Dict[str, Any]:
     project = _validate_project_name(project)
     _load_project_or_404(project)
 
-    if not isinstance(lines_in, list) or not all(isinstance(x, str) for x in lines_in):
-        raise HTTPException(status_code=400, detail="lines must be a list of strings")
-
-    # Filter out purely-empty lines; keep ordering intact.
-    cleaned: List[str] = []
-    for ln in lines_in:
-        s = ln.rstrip("\n\r")
-        if s.strip() == "":
-            continue
-        cleaned.append(s)
-
-    if not cleaned:
-        raise HTTPException(status_code=400, detail="lines must contain at least one non-empty line")
+    cleaned = _validate_responsefile_rendered_lines(lines_in)
 
     response_dir = get_responses_dir(project, required=True)
     script_path = os.path.join(response_dir, f"{project}.rsp")
@@ -286,6 +794,7 @@ def _write_responsefile_lines(project: str, lines_in: List[str], migration_metho
     result = {
         "status": "success",
         "message": f"Response file {project}.rsp written successfully",
+        "project": project,
         "path": script_path,
         "line_count": len(cleaned),
         "sha256": sha256,
@@ -293,6 +802,55 @@ def _write_responsefile_lines(project: str, lines_in: List[str], migration_metho
     if effective_migration_method:
         result["migration_method"] = effective_migration_method
     return result
+
+
+def _compile_responsefile_lines(project: str, migration_method: str, values: Dict[str, Any]) -> Tuple[str, List[str]]:
+    project = _validate_project_name(project)
+    project_record = _load_project_or_404(project)
+    normalized_method = _require_migration_method(migration_method)
+    if not isinstance(values, dict):
+        raise HTTPException(status_code=400, detail="values must be an object")
+
+    if "MIGRATION_METHOD" in values:
+        payload_method = _normalize_migration_method(values.get("MIGRATION_METHOD"))
+        if payload_method != normalized_method:
+            raise HTTPException(
+                status_code=400,
+                detail="values.MIGRATION_METHOD conflicts with migration_method",
+            )
+
+    connections = load_connections()
+    environment_values = _project_environment_values_or_400(
+        project_record,
+        connections,
+        normalized_method,
+    )
+    _reject_project_environment_conflicts(values, environment_values, normalized_method)
+
+    compiled_values: Dict[str, Any] = {"MIGRATION_METHOD": normalized_method}
+    compiled_values.update(values)
+    compiled_values.update(environment_values)
+    compiled_values["MIGRATION_METHOD"] = normalized_method
+
+    try:
+        profile = get_profile(normalized_method)
+        _validate_project_medium_selection(profile, project_record, connections, compiled_values)
+        lines = build_response_file_lines(compiled_values, profile=profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return normalized_method, _validate_responsefile_rendered_lines(lines)
+
+
+def _preview_responsefile(payload: ResponseFileRequest) -> Dict[str, Any]:
+    project = _validate_project_name(payload.project)
+    normalized_method, lines = _compile_responsefile_lines(project, payload.migration_method, payload.values)
+    return {
+        "status": "planned",
+        "project": project,
+        "filename": f"{project}.rsp",
+        "lines": lines,
+        "migration_method": normalized_method,
+    }
 
 
 def _copy_responsefile_from_project(source_project: str, target_project: str, migration_method: str) -> Dict[str, Any]:
@@ -319,7 +877,7 @@ def _copy_responsefile_from_project(source_project: str, target_project: str, mi
     if target_method and target_method != requested_method:
         raise HTTPException(status_code=400, detail="Target project migration_method does not match requested migration_method")
 
-    source_path = _responsefile_path(source_project)
+    source_path = _responsefile_path(source_project, create_dir=False)
     if not os.path.exists(source_path):
         raise HTTPException(status_code=404, detail="Source response file not found")
 
@@ -370,6 +928,7 @@ def _copy_saved_job_from_project(source_project: str, target_project: str, migra
         or str(source_job.get("run_type") or "").strip().upper() != requested_run_type
     ):
         raise HTTPException(status_code=404, detail="Source saved job definition not found for requested run_type")
+    source_job = _validate_saved_job_api_record(source_name, source_job)
 
     target_rsp_value = target_record.get("rsp")
     target_rsp = target_rsp_value.strip() if isinstance(target_rsp_value, str) and target_rsp_value.strip() else f"{target_project}.rsp"
@@ -383,7 +942,10 @@ def _copy_saved_job_from_project(source_project: str, target_project: str, migra
             "run_type": requested_run_type,
         }
     )
-    copied_job = copied_params.model_dump()
+    copied_job = _model_to_dict(copied_params)
+    target_profile = _project_profile_or_400(target_project)
+    copied_job["job_parameters"] = _compact_job_parameters(copied_job.get("job_parameters"))
+    _validate_job_parameter_keys(target_profile, copied_job["job_parameters"])
 
     jobs[target_name] = copied_job
     save_saved_jobs(jobs)
@@ -441,11 +1003,46 @@ def _load_project_or_404(name: str) -> Dict[str, Any]:
     project = _validate_project_name(name)
     projects = load_projects()
     proj = projects.get(project)
-    if not proj:
+    if not isinstance(proj, dict):
         raise HTTPException(status_code=404, detail="Project not found")
-    if "name" not in proj:
-        proj = {**proj, "name": project}
-    return proj
+    return _project_api_record(project, proj, "projects storage")
+
+
+def _project_owned_dir(category: str, project: str) -> Path:
+    base_dir = (Path(MIGRATION_BASE) / category).resolve(strict=False)
+    target_dir = (base_dir / project).resolve(strict=False)
+    try:
+        target_dir.relative_to(base_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid project {category} path") from exc
+    return target_dir
+
+
+def _delete_project_owned_dirs(project: str) -> List[str]:
+    removed: List[str] = []
+    for category in ("responses", "scripts"):
+        target_dir = _project_owned_dir(category, project)
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+            removed.append(str(target_dir))
+    return removed
+
+
+def _delete_project_saved_jobs(project: str) -> int:
+    saved_jobs = load_saved_jobs()
+    kept: Dict[str, Dict[str, Any]] = {}
+    removed_count = 0
+    for name, job in saved_jobs.items():
+        belongs_to_project = False
+        if isinstance(job, dict):
+            belongs_to_project = str(job.get("project") or "") == project
+        if belongs_to_project:
+            removed_count += 1
+            continue
+        kept[name] = job
+    if removed_count:
+        save_saved_jobs(kept)
+    return removed_count
 
 
 def load_saved_jobs() -> Dict[str, Dict[str, Any]]:
@@ -492,14 +1089,14 @@ def _record_project_job_id(project: str, run_type: str, job_id: str):
         return
     rt = (run_type or "").lower() or "eval"
     projects = load_projects()
-    proj = projects.get(project, {"name": project})
-    jobs = proj.get("jobs", {})
-    lst = jobs.get(rt, [])
+    proj = _project_api_record(project, projects.get(project), "projects storage")
+    jobs = dict(proj.get("jobs") or {})
+    lst = list(jobs.get(rt, []))
     if job_id not in lst:
         lst.append(job_id)
         jobs[rt] = lst
         proj["jobs"] = jobs
-        projects[project] = proj
+        projects[project] = _project_api_record(project, proj, "projects storage")
         save_projects(projects)
 
 
@@ -519,7 +1116,7 @@ def find_project_by_job(job_id: str) -> Optional[str]:
     return None
 
 
-@app.get("/jobids")
+@app.get("/jobs/ids")
 def list_job_ids(username: str = Depends(verify_credentials)):
     return {"job_ids": load_job_ids()}
 
@@ -768,7 +1365,7 @@ def _read_responsefile_values_from_path(path: str) -> Dict[str, str]:
 def _read_responsefile_values(project: str) -> Dict[str, str]:
     if not project:
         return {}
-    return _read_responsefile_values_from_path(_responsefile_path(project))
+    return _read_responsefile_values_from_path(_responsefile_path(project, create_dir=False))
 
 
 def _inventory_for_zdm_job(
@@ -833,7 +1430,7 @@ def _refresh_zdm_job_snapshot() -> Dict[str, Any]:
     return snapshot
 
 
-@app.get("/query/jobs")
+@app.get("/jobs")
 def list_zdm_jobs(
     refresh: bool = False,
     username: str = Depends(verify_credentials),
@@ -1050,13 +1647,31 @@ def fetch_discovery_extra_query(cursor, key: str, sql: str) -> Union[Dict[str, A
 
 
 def get_connection_dir(name: str) -> str:
-    safe = _validate_project_name(name)
+    safe = _validate_connection_name(name)
     path = os.path.join(MIGRATION_BASE, "connections", safe)
     os.makedirs(path, exist_ok=True)
     return path
 
 
+def _safe_filename_component(value: Any, default: str) -> str:
+    component = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or default).strip())
+    component = re.sub(r"_+", "_", component).strip("_-")
+    return component or default
+
+
+def _discovery_snapshot_base_filename(conn_name: str, conn_info: Dict[str, Any], ts: str) -> str:
+    return "_".join(
+        [
+            _safe_filename_component(conn_name, "conn"),
+            _safe_filename_component(conn_info.get("host"), "conn"),
+            _safe_filename_component(conn_info.get("service_name"), "svc"),
+            _safe_filename_component(ts, "snapshot"),
+        ]
+    )
+
+
 def _load_connection_or_404(name: str) -> Dict[str, Any]:
+    name = _validate_connection_name(name)
     connections = load_connections()
     conn_info = connections.get(name)
     if not conn_info:
@@ -1148,7 +1763,7 @@ def _collect_db_snapshot(
     try:
         disc_dir = get_discovery_dir()
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-        base_fname = f"{conn_name}_{conn_info.get('host','conn')}_{conn_info.get('service_name','svc')}_{ts}"
+        base_fname = _discovery_snapshot_base_filename(conn_name, conn_info, ts)
         snap_path = os.path.join(disc_dir, f"{base_fname}_snapshot.json")
         raw_path = os.path.join(disc_dir, f"{base_fname}_raw.json")
         with open(snap_path, "w", encoding="utf-8") as handle:
@@ -1163,7 +1778,9 @@ def _collect_db_snapshot(
 
 def resolve_project_name(project: Optional[str], required: bool = False, default: str = "_global") -> str:
     if project:
-        return project
+        if project == default:
+            return default
+        return _validate_project_name(project)
     if required:
         raise HTTPException(status_code=400, detail="project is required")
     return default
@@ -1181,11 +1798,43 @@ def resolve_project_for_job(project: Optional[str], jobid: Optional[str] = None,
     return "_global"
 
 
-def ensure_dir(project: Optional[str], subdir: str, required: bool = False) -> str:
-    pname = resolve_project_name(project, required=required)
-    target_dir = os.path.join(MIGRATION_BASE, pname, subdir)
-    os.makedirs(target_dir, exist_ok=True)
-    return target_dir
+def _validate_job_id(job_id: str) -> str:
+    candidate = str(job_id or "").strip()
+    if not _SAFE_JOB_ID_RE.fullmatch(candidate):
+        raise HTTPException(status_code=400, detail="Invalid job_id")
+    return candidate
+
+
+def get_zdm_scheduled_dir() -> Path:
+    zdm_base = os.getenv("ZDM_BASE") or "/u01/app/zdmbase"
+    return Path(zdm_base) / "chkbase" / "scheduled"
+
+
+def _validate_log_file_name(name: str) -> str:
+    candidate = str(name or "").strip()
+    if not candidate or candidate != os.path.basename(candidate) or "\x00" in candidate:
+        raise HTTPException(status_code=400, detail="Invalid log file name")
+    return candidate
+
+
+def _is_job_log_name(job_id: str, name: str) -> bool:
+    prefix = f"job-{job_id}"
+    return name == prefix or name.startswith(f"{prefix}-") or name.startswith(f"{prefix}.")
+
+
+def _resolve_job_log_path(job_id: str, name: str) -> Path:
+    job_id = _validate_job_id(job_id)
+    name = _validate_log_file_name(name)
+    if not _is_job_log_name(job_id, name):
+        raise HTTPException(status_code=400, detail="Log file name does not match job_id")
+
+    scheduled_dir = get_zdm_scheduled_dir().resolve(strict=False)
+    log_path = (scheduled_dir / name).resolve(strict=False)
+    try:
+        log_path.relative_to(scheduled_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid log file name") from exc
+    return log_path
 
 
 def get_responses_dir(project: str, required: bool = True) -> str:
@@ -1240,11 +1889,6 @@ def resolve_cred_wallet_path(wallet_name: Optional[str], wallet_path: Optional[s
     return os.path.join(base_dir, wallet_name)
 
 
-def resolve_wallet_path(wallet_name: Optional[str], wallet_path: Optional[str]) -> str:
-    """Deprecated compatibility helper; now routes to credential wallet resolver."""
-    return resolve_cred_wallet_path(wallet_name, wallet_path)
-
-
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
     pname = resolve_project_name(project, required=required)
     target_dir = get_scripts_dir(pname, required=False)
@@ -1256,17 +1900,14 @@ def write_temp_script(prefix: str, content: str, project: Optional[str] = None, 
     return path
 
 
-def resolve_response_dir(project: Optional[str], required: bool = False) -> str:
-    pname = resolve_project_name(project, required=required)
-    return get_responses_dir(pname, required=required)
-
-@app.get("/query/{jobid}")
+@app.get("/jobs/{jobid}")
 def query(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
+    jobid = _validate_job_id(jobid)
     # Auto-detect project from projects.json if not provided
-    project = resolve_project_for_job(project, jobid=jobid, required=True)
+    project = resolve_project_for_job(project, jobid=jobid, required=False)
     query_script = f"""
     #!/bin/bash
-    $ZDM_HOME/bin/zdmcli query job -jobid {jobid}
+    $ZDM_HOME/bin/zdmcli query job -jobid {shlex.quote(jobid)}
     """
     script_path = write_temp_script("query_", query_script, project)
 
@@ -1289,135 +1930,70 @@ def query(jobid: str, project: Optional[str] = None, username: str = Depends(ver
         raise HTTPException(status_code=500, detail=error_message)
 
 
-class ResumeParams(BaseModel):
-    project: Optional[str] = None
-    pauseafter: Optional[str] = None
-    skip: Optional[str] = None
-    ignore: Optional[str] = None
-
-
-@app.post("/resume/{jobid}")
-def resume(jobid: str, params: ResumeParams = Body(...), username: str = Depends(verify_credentials)):
-    resume_script_parts = [
-        "#!/bin/bash",
-        f"$ZDM_HOME/bin/zdmcli resume job -jobid {jobid}"
-    ]
-    if params and params.skip:
-        resume_script_parts[-1] += f" -skip {params.skip}"
-    if params and params.ignore:
-        resume_script_parts[-1] += f" -ignore {params.ignore}"
-    resume_script = "\n".join(resume_script_parts)
-    project = resolve_project_for_job(params.project, jobid=jobid, required=False)
-    script_path = write_temp_script("resume_", resume_script, project, required=bool(project))
-
-    try:
-        result = subprocess.run(
-            ["/bin/bash", script_path],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        output = result.stdout
-        # Since stderr=subprocess.PIPE is set, stderr will always be captured
-        if result.stderr:
-            output += "\nError output:\n" + result.stderr
-        return {"status": "success", "output": output}
-    except subprocess.CalledProcessError as e:
-        # It's better to log the actual error message for debugging purposes
-        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
-        raise HTTPException(status_code=500, detail=error_message)
-
-## API to Resume a Job and Pause Again at Another Stage
-@app.post("/resume_pauseagain/{jobid}")
-def resume_pauseagain(jobid: str, params: ResumeParams = Body(...), username: str = Depends(verify_credentials)):
-    resume_pauseagain_script = [
-        "#!/bin/bash",
-        f"$ZDM_HOME/bin/zdmcli resume job -jobid {jobid}"
-    ]
-
-    if params.pauseafter:
-        resume_pauseagain_script.append(f" -pauseafter {params.pauseafter}")
-    if params.skip:
-        resume_pauseagain_script.append(f" -skip {params.skip}")
-    if params.ignore:
-        resume_pauseagain_script.append(f" -ignore {params.ignore}")
-
-    # Join the script lines into a single command
-    resume_script_v2 = " \\\n".join(resume_pauseagain_script)
-    project = resolve_project_for_job(params.project, jobid=jobid, required=False)
-    script_path = write_temp_script("resume_pause_", resume_script_v2, project, required=bool(project))
-
-    try:
-        result = subprocess.run(
-            ["/bin/bash", script_path],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        output = result.stdout
-        if result.stderr:
-            output += "\nError output:\n" + result.stderr
-        return {"status": "success", "output": output}
-    except subprocess.CalledProcessError as e:
-        error_message = f"Resume Pause Again Job failed with return code {e.returncode}: {e.output}"
-        raise HTTPException(status_code=500, detail=error_message)
-
-
-class DBConnectionParams(BaseModel):
+class DBConnectionParams(StrictRequestModel):
     name: str
     host: str
     port: int
     service_name: str
     username: str
     db_type: Optional[str] = None
+    connection_role: Optional[str] = None
     protocol: Optional[str] = "TCP"
     allow_tls_without_wallet: Optional[bool] = False
-    tls_wallet_uploaded_dir: Optional[str] = None
 
 
-class DBConnectionCheckParams(BaseModel):
+class DBConnectionCheckParams(StrictRequestModel):
     name: str
     password: str  # required for connectivity
     run_snapshot: bool = False
 
-class DBConnectionDiscoverParams(BaseModel):
+class DBConnectionDiscoverParams(StrictRequestModel):
     name: str
     password: str  # required for discovery
-    migration_type: str  # logical_offline, logical_online, physical_offline, physical_online, hybrid_offline
+    migration_type: str  # OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL, HYBRID_OFFLINE
     role: Optional[str] = None  # optional tag for future compare views
 
 
-class ProjectParams(BaseModel):
+class ProjectParams(StrictRequestModel):
     name: str
     rsp: Optional[str] = None
     source_connection: Optional[str] = None
     target_connection: Optional[str] = None
 
 
-class PrefillParams(BaseModel):
+class PrefillParams(StrictRequestModel):
     project: Optional[str] = None
     source_connection: str
     target_connection: str
 
 
-@app.post("/dbconnection")
+@app.post("/dbconnections")
 def create_db_connection(params: DBConnectionParams, username: str = Depends(verify_credentials)):
+    name = _validate_connection_name(params.name)
     connections = load_connections()
-    payload = params.dict()
-    connections[params.name] = payload
+    existing = connections.get(name)
+    payload = dict(existing) if isinstance(existing, dict) else {}
+    incoming = _model_to_supplied_dict(params) if isinstance(existing, dict) else _model_to_dict(params)
+    for key, value in incoming.items():
+        if value is None and key in payload:
+            continue
+        payload[key] = value
+    payload["name"] = name
+    _validate_connection_record_contract(payload)
+    api_payload = _dbconnection_api_record(name, payload, "POST /dbconnections", allow_storage_extra=True)
+    connections[name] = payload
     save_connections(connections)
-    return {"status": "success", "message": f"Connection '{params.name}' saved", "connection": payload}
+    return {"status": "success", "message": f"Connection '{name}' saved", "connection": api_payload}
 
 
 @app.get("/dbconnections")
 def list_db_connections(username: str = Depends(verify_credentials)):
-    return load_connections()
+    return _dbconnections_api_response()
 
 
-@app.delete("/dbconnection/{name}")
+@app.delete("/dbconnections/{name}")
 def delete_db_connection(name: str, username: str = Depends(verify_credentials)):
+    name = _validate_connection_name(name)
     connections = load_connections()
     if name not in connections:
         raise HTTPException(status_code=404, detail=f"Connection '{name}' not found")
@@ -1428,51 +2004,91 @@ def delete_db_connection(name: str, username: str = Depends(verify_credentials))
 
 @app.get("/projects")
 def list_projects(username: str = Depends(verify_credentials)):
-    return load_projects()
+    return _projects_api_response()
 
 
-@app.post("/project")
+@app.post("/projects")
 def create_project(params: ProjectParams, username: str = Depends(verify_credentials)):
+    name = _validate_project_name(params.name)
     projects = load_projects()
-    projects[params.name] = {
-        "name": params.name,
+    if name in projects:
+        raise HTTPException(status_code=409, detail=f"Project '{name}' already exists. Delete it before creating it again.")
+    connections = load_connections()
+    source_connection = _require_project_connection_role(
+        connections,
+        params.source_connection,
+        "source",
+        "source_connection",
+    )
+    target_connection = _require_project_connection_role(
+        connections,
+        params.target_connection,
+        "target",
+        "target_connection",
+    )
+    projects[name] = {
+        "name": name,
         "rsp": params.rsp,
-        "source_connection": params.source_connection,
-        "target_connection": params.target_connection,
+        "source_connection": source_connection,
+        "target_connection": target_connection,
     }
+    project_payload = _project_api_record(name, projects[name], "POST /projects")
+    projects[name] = project_payload
     save_projects(projects)
-    return {"status": "success", "message": f"Project '{params.name}' saved", "project": projects[params.name]}
+    return {"status": "success", "message": f"Project '{name}' saved", "project": project_payload}
 
 
-@app.delete("/project/{name}")
+@app.delete("/projects/{name}")
 def delete_project(name: str, username: str = Depends(verify_credentials)):
+    name = _validate_project_name(name)
     projects = load_projects()
     if name not in projects:
         raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+
+    removed_dirs = _delete_project_owned_dirs(name)
+    removed_saved_jobs = _delete_project_saved_jobs(name)
     projects.pop(name)
     save_projects(projects)
-    return {"status": "success", "message": f"Project '{name}' deleted"}
+    return {
+        "status": "success",
+        "message": f"Project '{name}' deleted",
+        "removed_saved_jobs": removed_saved_jobs,
+        "removed_dirs": removed_dirs,
+    }
 
 
-@app.get("/jobsaved")
+@app.get("/saved-jobs")
 def list_saved_jobs(username: str = Depends(verify_credentials)):
-    return load_saved_jobs()
+    return _saved_jobs_api_response()
 
 
-@app.post("/jobsaved")
+@app.post("/saved-jobs")
 def upsert_saved_job(params: SavedJobParams, username: str = Depends(verify_credentials)):
     jobs = load_saved_jobs()
     name = (params.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Job name is required")
-    payload = params.dict()
-    payload["run_type"] = (params.run_type or "EVAL").upper()
-    jobs[name] = payload
+    project = _validate_project_name(params.project)
+    run_type = _require_run_type(params.run_type)
+    expected_name = _saved_job_name(project, run_type)
+    if name != expected_name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job name must be '{expected_name}' for project '{project}' and run_type '{run_type}'",
+        )
+    profile = _project_profile_or_400(project)
+    payload = _model_to_dict(params)
+    payload["name"] = expected_name
+    payload["run_type"] = run_type
+    payload["project"] = project
+    payload["job_parameters"] = _compact_job_parameters(payload.get("job_parameters"))
+    _validate_job_parameter_keys(profile, payload["job_parameters"])
+    jobs[expected_name] = payload
     save_saved_jobs(jobs)
-    return {"status": "success", "message": f"Job '{name}' saved", "job": payload}
+    return {"status": "success", "message": f"Job '{expected_name}' saved", "job": payload}
 
 
-@app.delete("/jobsaved/{name}")
+@app.delete("/saved-jobs/{name}")
 def delete_saved_job(name: str, username: str = Depends(verify_credentials)):
     jobs = load_saved_jobs()
     if name not in jobs:
@@ -1482,7 +2098,7 @@ def delete_saved_job(name: str, username: str = Depends(verify_credentials)):
     return {"status": "success", "message": f"Saved job '{name}' deleted"}
 
 
-@app.post("/jobsaved/copy")
+@app.post("/saved-jobs/copy")
 def copy_saved_job(payload: CopySavedJobRequest, username: str = Depends(verify_credentials)):
     return _copy_saved_job_from_project(
         payload.source_project,
@@ -1492,21 +2108,47 @@ def copy_saved_job(payload: CopySavedJobRequest, username: str = Depends(verify_
     )
 
 
-@app.post("/dbconnection/{name}/uploadTlsWallet")
+@app.post("/dbconnections/{name}/tls-wallet")
 def upload_tls_wallet(name: str, wallet: UploadFile = File(...), username: str = Depends(verify_credentials)):
+    name = _validate_connection_name(name)
+    connections = load_connections()
+    if name not in connections:
+        raise HTTPException(status_code=404, detail=f"Connection '{name}' not found")
+
     conn_dir = get_connection_dir(name)
-    wallet_dir = os.path.join(conn_dir, "tls_wallet")
-    os.makedirs(wallet_dir, exist_ok=True)
-    target_path = os.path.join(wallet_dir, wallet.filename)
-    with open(target_path, "wb") as handle:
+    wallet_dir = Path(conn_dir) / "tls_wallet"
+    wallet_dir.mkdir(parents=True, exist_ok=True)
+    wallet_dir_resolved = wallet_dir.resolve(strict=False)
+    wallet_filename = _tls_wallet_storage_filename(wallet.filename)
+    target_path = (wallet_dir_resolved / wallet_filename).resolve(strict=False)
+    try:
+        target_path.relative_to(wallet_dir_resolved)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid wallet filename") from exc
+
+    for storage_name in _TLS_WALLET_STORAGE_NAMES.values():
+        stale_path = wallet_dir_resolved / storage_name
+        if stale_path != target_path and stale_path.exists():
+            stale_path.unlink()
+
+    with target_path.open("wb") as handle:
         handle.write(wallet.file.read())
 
-    connections = load_connections()
-    if name in connections:
-        connections[name]["tls_wallet_uploaded_dir"] = wallet_dir
-        save_connections(connections)
+    connections[name]["tls_wallet_uploaded_dir"] = str(wallet_dir_resolved)
+    _dbconnection_api_record(
+        name,
+        connections[name],
+        "POST /dbconnections/{name}/tls-wallet",
+        allow_storage_extra=True,
+    )
+    save_connections(connections)
 
-    return {"status": "success", "message": "TLS wallet uploaded", "path": target_path, "wallet_dir": wallet_dir}
+    return {
+        "status": "success",
+        "message": "TLS wallet uploaded",
+        "path": str(target_path),
+        "wallet_dir": str(wallet_dir_resolved),
+    }
 
 
 def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDiscoverParams], run_snapshot: bool, migration_type: Optional[str] = None):
@@ -1564,17 +2206,18 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
         return {"status": "success", "message": f"Discovery for '{params.name}' succeeded", "snapshot": snapshot}
     return {"status": "success", "message": f"Connection '{params.name}' test succeeded"}
 
-@app.post("/dbconnection/test")
+@app.post("/dbconnections/test")
 def test_db_connection(params: DBConnectionCheckParams, username: str = Depends(verify_credentials)):
     return _run_connection_check(params, run_snapshot=False)
 
 
-@app.post("/dbconnection/discover")
+@app.post("/dbconnections/discover")
 def discover_db(params: DBConnectionDiscoverParams, username: str = Depends(verify_credentials)):
     return _run_connection_check(params, run_snapshot=True, migration_type=params.migration_type)
 
-@app.get("/dbconnection/discover/latest/{name}")
+@app.get("/dbconnections/{name}/discovery/latest")
 def get_latest_discovery(name: str, username: str = Depends(verify_credentials)):
+    name = _validate_connection_name(name)
     disc_dir = get_discovery_dir()
     prefix = f"{name}_"
     snapshot_files = [
@@ -1592,36 +2235,29 @@ def get_latest_discovery(name: str, username: str = Depends(verify_credentials))
         "snapshot": snapshot,
     }
 
-@app.post("/WriteResponseFile")
-def write_response_file(payload: WriteResponseFileRequest, username: str = Depends(verify_credentials)):
-    # Write-only endpoint: the frontend supplies the final response-file lines.
-    migration_method = getattr(payload, "migration_method", None)
-    return _write_responsefile_lines(payload.project, payload.lines, migration_method=migration_method)
+@app.post("/responsefiles/preview")
+def preview_response_file(payload: ResponseFileRequest, username: str = Depends(verify_credentials)):
+    return _preview_responsefile(payload)
 
 
-@app.post("/responsefile/copy")
+@app.post("/responsefiles")
+def write_response_file(payload: ResponseFileRequest, username: str = Depends(verify_credentials)):
+    project = _validate_project_name(payload.project)
+    normalized_method, lines = _compile_responsefile_lines(project, payload.migration_method, payload.values)
+    return _write_responsefile_lines(project, lines, migration_method=normalized_method)
+
+
+@app.post("/responsefiles/copy")
 def copy_response_file(payload: CopyResponseFileRequest, username: str = Depends(verify_credentials)):
     return _copy_responsefile_from_project(payload.source_project, payload.target_project, payload.migration_method)
 
 
-class RunJobParams(BaseModel):
+class RunJobParams(StrictRequestModel):
     project: str
-    run_type: str = "EVAL"  # EVAL | MIGRATE
+    run_type: str  # EVAL | MIGRATE
     rsp: Optional[str] = None
     dry_run: Optional[bool] = False
-    sourcedb: Optional[str] = None
-    sourcesid: Optional[str] = None
-    sourcenode: Optional[str] = None
-    srcauth: Optional[str] = None
-    srcarg1: Optional[str] = None
-    srcarg2: Optional[str] = None
-    srcarg3: Optional[str] = None
-    sourcesyswallet: Optional[str] = None
-    targetnode: Optional[str] = None
-    tgtauth: Optional[str] = None
-    tgtarg1: Optional[str] = None
-    tgtarg2: Optional[str] = None
-    tgtarg3: Optional[str] = None
+    job_parameters: Optional[Dict[str, Any]] = None
     advisor_mode: Optional[str] = "NONE"  # NONE|ADVISOR|IGNORE_ADVISOR|SKIP_ADVISOR
     flow_control: Optional[str] = "NONE"  # NONE|PAUSE_AFTER|STOP_AFTER
     flow_phase: Optional[str] = None
@@ -1632,95 +2268,33 @@ class RunJobParams(BaseModel):
     custom_args: Optional[List[str]] = None
 
 
-@app.post("/runjob")
+@app.post("/jobs")
 def run_job(params: RunJobParams, username: str = Depends(verify_credentials)):
     project = _validate_project_name(params.project)
+    proj_obj = _load_project_or_404(project)
 
-    # Resolve RSP: prefer request-provided, else from project, else 400
-    if not params.rsp:
-        proj_obj = _load_project_or_404(project)
-        rsp_path = proj_obj.get("rsp")
-        if not rsp_path:
-            raise HTTPException(status_code=400, detail="rsp is required for job run")
-        params.rsp = rsp_path
+    rsp_name = params.rsp or proj_obj.get("rsp")
+    if not rsp_name:
+        raise HTTPException(status_code=400, detail="rsp is required for job run")
+    rsp_path = _project_responsefile_path(project, rsp_name)
 
-    # Ensure RSP is absolute: if only filename provided, assume MIGRATION_BASE/responses/<project>/<file>
-    if params.rsp and not os.path.isabs(params.rsp):
-        rsp_dir = get_responses_dir(project, required=True)
-        params.rsp = os.path.join(rsp_dir, params.rsp)
-
-    lines = ["#!/bin/bash", "$ZDM_HOME/bin/zdmcli migrate database \\"]
-
-    def add(flag: str, value: Optional[str]):
-        if value:
-            lines.append(f"    {flag} {value} \\")
-
-    add("-rsp", params.rsp)
-    add("-sourcedb", params.sourcedb)
-    add("-sourcesid", params.sourcesid)
-    add("-sourcenode", params.sourcenode)
-    add("-srcauth", params.srcauth)
-    add("-srcarg1", params.srcarg1)
-    add("-srcarg2", params.srcarg2)
-    add("-srcarg3", params.srcarg3)
-    add("-sourcesyswallet", params.sourcesyswallet)
-    add("-targetnode", params.targetnode)
-    add("-tgtauth", params.tgtauth)
-    add("-tgtarg1", params.tgtarg1)
-    add("-tgtarg2", params.tgtarg2)
-    add("-tgtarg3", params.tgtarg3)
-
-    # advisor (mutually exclusive)
-    advisor = (params.advisor_mode or "NONE").upper()
-    if advisor == "ADVISOR":
-        lines.append("    -advisor \\")
-    elif advisor == "IGNORE_ADVISOR":
-        lines.append("    -ignoreadvisor \\")
-    elif advisor == "SKIP_ADVISOR":
-        lines.append("    -skipadvisor \\")
-
-    # -eval
-    if advisor != "ADVISOR" and (params.run_type or "EVAL").upper() == "EVAL":
-        lines.append("    -eval \\")
-
-    # genfixup
-    if params.genfixup:
-        lines.append(f"    -genfixup {params.genfixup} \\")
-
-    # ignore list
-    ignore_list = params.ignore or []
-    if ignore_list:
-        if "ALL" in ignore_list:
-            lines.append("    -ignore ALL \\")
+    try:
+        migration_method = _normalize_migration_method(proj_obj.get("migration_method"))
+        response_file_values: Dict[str, str] = {}
+        if not migration_method:
+            response_file_values = _read_responsefile_values_from_path(rsp_path)
+            migration_method = _normalize_migration_method(response_file_values.get("MIGRATION_METHOD"))
         else:
-            lines.append(f"    -ignore {','.join(ignore_list)} \\")
-
-    # schedule
-    if params.schedule:
-        lines.append(f"    -schedule {params.schedule} \\")
-
-    # listphases
-    if params.listphases:
-        lines.append("    -listphases \\")
-
-    # flow control
-    flow = (params.flow_control or "NONE").upper()
-    phase = params.flow_phase
-    if flow in ("PAUSE_AFTER", "STOP_AFTER"):
-        if not phase:
-            raise HTTPException(status_code=400, detail=f"{flow.lower()} requires flow_phase")
-        flag = "-pauseafter" if flow == "PAUSE_AFTER" else "-stopafter"
-        lines.append(f"    {flag} {phase} \\")
-
-    # custom args (list of strings)
-    if params.custom_args:
-        for arg in params.custom_args:
-            a = str(arg).strip()
-            if a:
-                lines.append(f"    {a} \\")
-
-    if lines[-1].endswith("\\"):
-        lines[-1] = lines[-1][:-1]
+            response_file_values = _read_responsefile_values_from_path(rsp_path)
+        profile = get_profile(migration_method)
+        params_dict = _model_to_dict(params)
+        params_dict["rsp"] = rsp_path
+        params_dict["response_file_values"] = response_file_values
+        params_dict["job_parameters"] = _compact_job_parameters(params_dict.get("job_parameters"))
+        _validate_job_parameter_keys(profile, params_dict["job_parameters"])
+        lines = build_migrate_command(profile, params_dict)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     script = "\n".join(lines)
     script_path = write_temp_script("runjob_", script, project, required=True)
@@ -1752,16 +2326,16 @@ def run_job(params: RunJobParams, username: str = Depends(verify_credentials)):
         if job_id:
             save_job_id(job_id)
             _record_project_job_id(project, params.run_type, job_id)
-        return {"status": "success", "script_path": script_path, "output": output, "command": lines, "job_id": job_id}
+        return {"status": "submitted", "script_path": script_path, "output": output, "command": lines, "job_id": job_id}
     except subprocess.CalledProcessError as e:
         error_message = f"Run job failed (return code {e.returncode}): {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
 
-@app.get("/responsefile/{project}")
+@app.get("/responsefiles/{project}")
 def read_response_file(project: str, username: str = Depends(verify_credentials)):
     project = _validate_project_name(project)
-    response_dir = get_responses_dir(project, required=True)
-    path = os.path.join(response_dir, f"{project}.rsp")
+    _load_project_or_404(project)
+    path = _responsefile_path(project, create_dir=False)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Response file not found")
     try:
@@ -1771,24 +2345,50 @@ def read_response_file(project: str, username: str = Depends(verify_credentials)
         raise HTTPException(status_code=500, detail=f"Failed to read response file: {exc}") from exc
     return {"status": "success", "project": project, "path": path, "content": content}
 
-@app.post("/ReadJobLog")
-def read_job_log(params: LogFileParams, username: str = Depends(verify_credentials)):
-    file_path = params.file_path
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+@app.get("/joblogs")
+def list_job_logs(job_id: str, username: str = Depends(verify_credentials)):
+    job_id = _validate_job_id(job_id)
+    scheduled_dir = get_zdm_scheduled_dir()
+    logs: List[Dict[str, Any]] = []
+    if scheduled_dir.exists():
+        for path in sorted(scheduled_dir.iterdir(), key=lambda item: item.name):
+            if not path.is_file() or not _is_job_log_name(job_id, path.name):
+                continue
+            resolved_path = path.resolve(strict=False)
+            try:
+                resolved_path.relative_to(scheduled_dir.resolve(strict=False))
+            except ValueError:
+                continue
+            stat = path.stat()
+            logs.append(
+                {
+                    "name": path.name,
+                    "size_bytes": stat.st_size,
+                    "modified_time": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                }
+            )
+    return {"status": "success", "job_id": job_id, "logs": logs}
+
+
+@app.post("/joblogs/read")
+def read_job_log(params: LogFileReadParams, username: str = Depends(verify_credentials)):
+    job_id = _validate_job_id(params.job_id)
+    log_path = _resolve_job_log_path(job_id, params.name)
+    if not log_path.is_file():
+        raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
-        with open(file_path, 'r') as file:
+        with log_path.open("r", encoding="utf-8", errors="replace") as file:
             content = file.read()
-        return {"status": "success", "content": content}
+        return {"status": "success", "job_id": job_id, "name": log_path.name, "content": content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
-class WalletFileParams(BaseModel):
+class WalletFileParams(StrictRequestModel):
     wallet_name: Optional[str] = None
     wallet_path: Optional[str] = None
 
-@app.get("/tlsWallets")
+@app.get("/tls-wallets")
 def list_tls_wallets(username: str = Depends(verify_credentials)):
     base_dir = get_tls_wallets_dir()
     wallets = []
@@ -1799,7 +2399,7 @@ def list_tls_wallets(username: str = Depends(verify_credentials)):
     return {"wallets": wallets}
 
 
-@app.get("/credentialWallets")
+@app.get("/credential-wallets")
 def list_credential_wallets(username: str = Depends(verify_credentials)):
     base_dir = get_cred_wallets_dir()
     wallets = []
@@ -1809,7 +2409,7 @@ def list_credential_wallets(username: str = Depends(verify_credentials)):
             wallets.append({"name": name, "path": path})
     return {"wallets": wallets}
 
-@app.post("/OraPKICreateWallet")
+@app.post("/wallets/ora-pki")
 def create_wallet(params: WalletFileParams, username: str = Depends(verify_credentials)):
     wallet_path = resolve_cred_wallet_path(params.wallet_name, params.wallet_path)
     create_wallet_script = [
@@ -1841,13 +2441,13 @@ def create_wallet(params: WalletFileParams, username: str = Depends(verify_crede
         error_message = f"Create Wallet failed with return code {e.returncode}: {e.stderr}"
         raise HTTPException(status_code=500, detail=error_message)
 
-class MkstoreParams(BaseModel):
+class MkstoreParams(StrictRequestModel):
     wallet_name: Optional[str] = None
     wallet_path: Optional[str] = None
     user: str
     password: str
 
-@app.post("/MkstoreCreateCredential")
+@app.post("/wallets/mkstore-credential")
 def create_credential(params: MkstoreParams, username: str = Depends(verify_credentials)):
     wallet_path = resolve_cred_wallet_path(params.wallet_name, params.wallet_path)
     user = params.user
@@ -1879,54 +2479,6 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
             raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
     except subprocess.CalledProcessError as e:
         error_message = f"Create Credential failed with return code {e.returncode}: {e.stderr}"
-        raise HTTPException(status_code=500, detail=error_message)
-
-@app.post("/abort/{jobid}")
-def abort(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
-    project = resolve_project_for_job(project, jobid=jobid, required=False)
-    abort_script = f"""
-    #!/bin/bash
-    $ZDM_HOME/bin/zdmcli abort job -jobid {jobid}
-    """
-    abort_script_path = write_temp_script("abort_", abort_script, project, required=bool(project))
-
-    try:
-        result = subprocess.run(
-            ["bash", abort_script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        output = result.stdout
-        if result.stderr:
-            output += "\nError output:\n" + result.stderr
-        return {"status": "success", "output": output}
-    except subprocess.CalledProcessError as e:
-        error_message = f"Abort job failed with return code {e.returncode}: {e.output}"
-        raise HTTPException(status_code=500, detail=error_message)
-
-@app.post("/suspend/{jobid}")
-def suspend(jobid: str, project: Optional[str] = None, username: str = Depends(verify_credentials)):
-    project = resolve_project_for_job(project, jobid=jobid, required=False)
-    suspend_script = f"""
-    #!/bin/bash
-    $ZDM_HOME/bin/zdmcli suspend job -jobid {jobid}
-    """
-    suspend_script_path = write_temp_script("suspend_", suspend_script, project, required=bool(project))
-
-    try:
-        result = subprocess.run(
-            ["bash", suspend_script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True
-        )
-        output = result.stdout
-        if result.stderr:
-            output += "\nError output:\n" + result.stderr
-        return {"status": "success", "output": output}
-    except subprocess.CalledProcessError as e:
-        error_message = f"Suspend job failed with return code {e.returncode}: {e.output}"
         raise HTTPException(status_code=500, detail=error_message)
 
 if __name__ == "__main__":

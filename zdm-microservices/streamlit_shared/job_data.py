@@ -97,15 +97,10 @@ def zdm_migration_method_label(value: Any) -> str:
     normalized = _text(value).upper().replace("-", "_").replace(" ", "_")
     labels = {
         "OFFLINE_LOGICAL": "Logical Offline",
-        "LOGICAL_OFFLINE": "Logical Offline",
         "ONLINE_LOGICAL": "Logical Online",
-        "LOGICAL_ONLINE": "Logical Online",
         "ONLINE_PHYSICAL": "Physical Online",
-        "PHYSICAL_ONLINE": "Physical Online",
         "OFFLINE_PHYSICAL": "Physical Offline",
-        "PHYSICAL_OFFLINE": "Physical Offline",
         "OFFLINE_XTTS": "Hybrid Offline",
-        "XTTS_OFFLINE": "Hybrid Offline",
         "HYBRID_OFFLINE": "Hybrid Offline",
     }
     if normalized in labels:
@@ -144,10 +139,14 @@ def _fleet_key(row: Dict[str, str]) -> str:
 def zdm_job_records_to_dataframe(records: Iterable[Dict[str, Any]]) -> pd.DataFrame:
     rows: List[Dict[str, str]] = []
     for record in records or []:
-        if not isinstance(record, dict) or not isinstance(record.get("job"), dict):
-            raise ValueError("zdm_job_records_to_dataframe expects enriched records from GET /query/jobs")
+        if (
+            not isinstance(record, dict)
+            or not isinstance(record.get("job"), dict)
+            or not isinstance(record.get("inventory"), dict)
+        ):
+            raise ValueError("zdm_job_records_to_dataframe expects enriched records from GET /jobs with job and inventory objects")
         job = record["job"]
-        inventory = record.get("inventory") or {}
+        inventory = record["inventory"]
         scheduled_args = job.get("scheduled_args") or {}
         project = inventory.get("project") or {}
         response_file = inventory.get("response_file") or {}

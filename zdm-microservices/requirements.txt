@@ -5,3 +5,4 @@ passlib
 streamlit
 oracledb
 python-multipart
+pyyaml
