@@ -9,12 +9,14 @@ AUTH_METHOD_LABELS = {
     "Password": "password",
     "Credential wallet": "credential_wallet",
 }
+DEFAULT_AUTH_METHOD_LABEL = "Credential wallet"
 
 
 def render_db_auth_method(*, key_prefix: str) -> str:
     method_label = st.radio(
         "Authentication",
         list(AUTH_METHOD_LABELS.keys()),
+        index=list(AUTH_METHOD_LABELS.keys()).index(DEFAULT_AUTH_METHOD_LABEL),
         horizontal=True,
         key=f"{key_prefix}_auth_method",
     )

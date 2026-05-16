@@ -57,6 +57,8 @@ except ImportError:
 
 app = FastAPI()
 
+MKSTORE_CREDENTIAL_CONNECT_STRING = "store"
+
 @app.on_event("startup")
 async def display_routes():
     routes = [route.path for route in app.routes]
@@ -2239,10 +2241,10 @@ def _resolve_db_auth(auth: DBAuthParams) -> Tuple[Dict[str, Any], Optional[str]]
         wallet_path = resolve_cred_wallet_path(wallet_name)
         if not os.path.isdir(wallet_path):
             raise HTTPException(status_code=404, detail=f"Credential wallet '{wallet_name}' not found")
-        credential_username = _credential_wallet_username(wallet_path)
-        if not credential_username:
+        credentials = _credential_wallet_credentials(wallet_path)
+        if not credentials:
             raise HTTPException(status_code=400, detail="Selected wallet has no credential. Add a credential first.")
-        return {"externalauth": True}, wallet_path
+        return credentials, None
 
     raise HTTPException(status_code=400, detail="auth.method must be password or credential_wallet")
 
@@ -2485,21 +2487,39 @@ class WalletFileParams(StrictRequestModel):
     wallet_name: str
 
 
+def _parse_mkstore_credential_entries(output: str) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        match = re.match(r"^(\d+)\s*:\s+(\S+)\s+(\S+)\s*$", stripped)
+        if match:
+            index = int(match.group(1))
+            if index in seen:
+                continue
+            seen.add(index)
+            entries.append(
+                {
+                    "index": index,
+                    "connect_string": match.group(2).strip(),
+                    "username": match.group(3).strip(),
+                }
+            )
+    return entries
+
+
 def _parse_mkstore_credential_users(output: str) -> List[str]:
     users: List[str] = []
     seen = set()
-    for line in (output or "").splitlines():
-        stripped = line.strip()
-        match = re.match(r"^\d+\s*:\s+\S+\s+(\S+)\s*$", stripped)
-        if match:
-            user = match.group(1).strip()
-            if user and user not in seen:
-                seen.add(user)
-                users.append(user)
+    for entry in _parse_mkstore_credential_entries(output):
+        user = str(entry["username"])
+        if user and user not in seen:
+            seen.add(user)
+            users.append(user)
     return users
 
 
-def _list_credential_wallet_users(wallet_path: str) -> List[str]:
+def _list_credential_wallet_entries(wallet_path: str) -> List[Dict[str, Any]]:
     script = "\n".join(
         [
             "#!/bin/bash",
@@ -2518,7 +2538,69 @@ def _list_credential_wallet_users(wallet_path: str) -> List[str]:
     except subprocess.CalledProcessError as exc:
         error_text = _called_process_error_text(exc)
         raise HTTPException(status_code=500, detail=f"List credentials failed with return code {exc.returncode}: {error_text}") from exc
-    return _parse_mkstore_credential_users(result.stdout)
+    return _parse_mkstore_credential_entries(result.stdout)
+
+
+def _list_credential_wallet_users(wallet_path: str) -> List[str]:
+    users: List[str] = []
+    seen = set()
+    for entry in _list_credential_wallet_entries(wallet_path):
+        user = str(entry["username"])
+        if user and user not in seen:
+            seen.add(user)
+            users.append(user)
+    return users
+
+
+def _parse_mkstore_entry_value(output: str, entry_name: str) -> Optional[str]:
+    pattern = re.compile(rf"^\s*{re.escape(entry_name)}\s*=\s*(.*)\s*$")
+    for line in (output or "").splitlines():
+        match = pattern.match(line)
+        if match:
+            value = match.group(1).strip()
+            return value if value else None
+    return None
+
+
+def _view_credential_wallet_entry(wallet_path: str, entry_name: str) -> Optional[str]:
+    script = "\n".join(
+        [
+            "#!/bin/bash",
+            f"$ZDM_HOME/bin/mkstore -wrl {shlex.quote(wallet_path)} -viewEntry {shlex.quote(entry_name)}",
+        ]
+    )
+    script_path = write_temp_script("view_credential_entry_", script)
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        error_text = _called_process_error_text(exc)
+        raise HTTPException(status_code=500, detail=f"View credential entry failed with return code {exc.returncode}: {error_text}") from exc
+    return _parse_mkstore_entry_value(result.stdout, entry_name)
+
+
+def _credential_wallet_credentials(wallet_path: str) -> Optional[Dict[str, str]]:
+    entries = _list_credential_wallet_entries(wallet_path)
+    entry = next(
+        (
+            item
+            for item in entries
+            if item.get("connect_string") == MKSTORE_CREDENTIAL_CONNECT_STRING
+        ),
+        None,
+    )
+    if not entry:
+        return None
+    password_entry = f"oracle.security.client.password{entry['index']}"
+    password = _view_credential_wallet_entry(wallet_path, password_entry)
+    if not password:
+        raise HTTPException(status_code=400, detail="Selected wallet credential password could not be read.")
+    return {"user": str(entry["username"]), "password": password}
 
 
 def _credential_wallet_username(wallet_path: str) -> Optional[str]:
@@ -2611,7 +2693,7 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
     password = params.password
     create_credential_script = [
         "#!/bin/bash",
-        f"$ZDM_HOME/bin/mkstore -wrl {shlex.quote(wallet_path)} -createCredential store {shlex.quote(user)} {shlex.quote(password)}"
+        f"$ZDM_HOME/bin/mkstore -wrl {shlex.quote(wallet_path)} -createCredential {MKSTORE_CREDENTIAL_CONNECT_STRING} {shlex.quote(user)} {shlex.quote(password)}"
     ]
 
     create_credential_command = "\n".join(create_credential_script)
