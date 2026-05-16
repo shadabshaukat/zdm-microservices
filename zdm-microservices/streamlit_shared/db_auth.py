@@ -6,8 +6,8 @@ import streamlit as st
 
 
 AUTH_METHOD_LABELS = {
-    "Password": "password",
     "Credential wallet": "credential_wallet",
+    "Password": "password",
 }
 DEFAULT_AUTH_METHOD_LABEL = "Credential wallet"
 

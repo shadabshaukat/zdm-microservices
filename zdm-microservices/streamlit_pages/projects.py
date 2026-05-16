@@ -65,6 +65,7 @@ def render(ctx: AppContext) -> None:
                 )
                 st.success(validated["message"])
                 st.json(validated)
+                st.rerun()
 
     st.markdown("### Existing projects")
     if not projects_resp:
