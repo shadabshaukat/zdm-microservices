@@ -17,7 +17,11 @@ from streamlit_shared.api_payload import (
     validate_tls_wallet_upload_response,
 )
 from streamlit_shared.context import AppContext
-from streamlit_shared.db_auth import render_db_auth_inputs, validate_db_auth_selection
+from streamlit_shared.db_auth import (
+    render_db_auth_inputs_for_method,
+    render_db_auth_method,
+    validate_db_auth_selection,
+)
 from streamlit_shared.db_types import (
     DB_CONNECTION_ROLE_OPTIONS,
     db_connection_role_label,
@@ -161,7 +165,7 @@ def render(ctx: AppContext) -> None:
                     {
                         "Name": name,
                         "Role": db_connection_role_label(info.get("connection_role", "")),
-                        "Connection Type": db_connection_type_label(info.get("db_type", "")),
+                        "DB Platform": db_connection_type_label(info.get("db_type", "")),
                         "Host": info.get("host", ""),
                         "Port": info.get("port", ""),
                         "Service": info.get("service_name", ""),
@@ -180,7 +184,7 @@ def render(ctx: AppContext) -> None:
                 column_config={
                     "Name": st.column_config.TextColumn(disabled=True),
                     "Role": st.column_config.TextColumn(disabled=True),
-                    "Connection Type": st.column_config.TextColumn(disabled=True),
+                    "DB Platform": st.column_config.TextColumn(disabled=True),
                     "TLS Wallet dir": st.column_config.TextColumn(disabled=True),
                     "Protocol": st.column_config.SelectboxColumn(options=["TCP", "TCPS"]),
                     "TLS w/o wallet": st.column_config.CheckboxColumn(),
@@ -235,17 +239,23 @@ def render(ctx: AppContext) -> None:
                         st.success(f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list.")
 
         st.markdown("### Test connection")
-        wallet_rows = validate_payload_or_stop(
-            api_request_required("get", "/credential-wallets", api_base, auth),
-            validate_credential_wallet_rows,
-        )
         last_saved = st.session_state.get("last_saved_conn", "-- Select --")
         options = ["-- Select --"] + list(conns.keys())
         default_idx = options.index(last_saved) if last_saved in options else 0
-        with st.form("test_connection"):
-            test_name = st.selectbox("Connection", options, index=default_idx)
-            auth_payload = render_db_auth_inputs(key_prefix="conn_test", wallet_rows=wallet_rows)
-            test_clicked = st.form_submit_button("Test", type="primary")
+        test_name = st.selectbox("Connection", options, index=default_idx)
+        auth_method = render_db_auth_method(key_prefix="conn_test")
+        wallet_rows = []
+        if auth_method == "credential_wallet":
+            wallet_rows = validate_payload_or_stop(
+                api_request_required("get", "/credential-wallets", api_base, auth),
+                validate_credential_wallet_rows,
+            )
+        auth_payload = render_db_auth_inputs_for_method(
+            key_prefix="conn_test",
+            method=auth_method,
+            wallet_rows=wallet_rows,
+        )
+        test_clicked = st.button("Test", type="primary")
 
         if test_clicked:
             if test_name == "-- Select --":

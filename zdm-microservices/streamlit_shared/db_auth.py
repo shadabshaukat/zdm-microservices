@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, Mapping, Sequence
 
 import streamlit as st
 
@@ -11,14 +11,22 @@ AUTH_METHOD_LABELS = {
 }
 
 
-def render_db_auth_inputs(*, key_prefix: str, wallet_rows: List[Mapping[str, Any]]) -> Dict[str, Any]:
+def render_db_auth_method(*, key_prefix: str) -> str:
     method_label = st.radio(
         "Authentication",
         list(AUTH_METHOD_LABELS.keys()),
         horizontal=True,
         key=f"{key_prefix}_auth_method",
     )
-    method = AUTH_METHOD_LABELS[method_label]
+    return AUTH_METHOD_LABELS[method_label]
+
+
+def render_db_auth_inputs_for_method(
+    *,
+    key_prefix: str,
+    method: str,
+    wallet_rows: Sequence[Mapping[str, Any]] = (),
+) -> Dict[str, Any]:
     if method == "password":
         username = st.text_input("DB username", key=f"{key_prefix}_auth_username")
         password = st.text_input("DB password", type="password", key=f"{key_prefix}_auth_password")

@@ -14,7 +14,11 @@ from streamlit_shared.api_payload import (
     validate_discovery_response,
 )
 from streamlit_shared.context import AppContext
-from streamlit_shared.db_auth import render_db_auth_inputs, validate_db_auth_selection
+from streamlit_shared.db_auth import (
+    render_db_auth_inputs_for_method,
+    render_db_auth_method,
+    validate_db_auth_selection,
+)
 from streamlit_shared.ui import st_df_safe
 from streamlit_shared.wallet_payload import validate_credential_wallet_rows
 
@@ -28,10 +32,6 @@ def render(ctx: AppContext) -> None:
     conns = validate_payload_or_stop(
         api_request_required("get", "/dbconnections", api_base, auth),
         validate_dbconnections_response,
-    )
-    wallet_rows = validate_payload_or_stop(
-        api_request_required("get", "/credential-wallets", api_base, auth),
-        validate_credential_wallet_rows,
     )
     conn_names = ["-- Select connection --"] + list(conns.keys())
     discovery_migration_types = {
@@ -50,7 +50,18 @@ def render(ctx: AppContext) -> None:
     with col_mt:
         selected_migration_label = st.selectbox("Migration type", list(discovery_migration_types.keys()), key="disc_mt")
         migration_type = discovery_migration_types[selected_migration_label]
-    auth_payload = render_db_auth_inputs(key_prefix="disc", wallet_rows=wallet_rows)
+    auth_method = render_db_auth_method(key_prefix="disc")
+    wallet_rows = []
+    if auth_method == "credential_wallet":
+        wallet_rows = validate_payload_or_stop(
+            api_request_required("get", "/credential-wallets", api_base, auth),
+            validate_credential_wallet_rows,
+        )
+    auth_payload = render_db_auth_inputs_for_method(
+        key_prefix="disc",
+        method=auth_method,
+        wallet_rows=wallet_rows,
+    )
 
     # -------- helpers (normalize once, then render) --------
     def _format_bytes(val: Optional[float]) -> str:

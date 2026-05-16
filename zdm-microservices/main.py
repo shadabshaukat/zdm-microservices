@@ -2242,7 +2242,7 @@ def _resolve_db_auth(auth: DBAuthParams) -> Tuple[Dict[str, Any], Optional[str]]
         credential_username = _credential_wallet_username(wallet_path)
         if not credential_username:
             raise HTTPException(status_code=400, detail="Selected wallet has no credential. Add a credential first.")
-        return {"user": credential_username}, wallet_path
+        return {"externalauth": True}, wallet_path
 
     raise HTTPException(status_code=400, detail="auth.method must be password or credential_wallet")
 
@@ -2490,11 +2490,7 @@ def _parse_mkstore_credential_users(output: str) -> List[str]:
     seen = set()
     for line in (output or "").splitlines():
         stripped = line.strip()
-        if not stripped or "connect_string username" in stripped.lower():
-            continue
         match = re.match(r"^\d+\s*:\s+\S+\s+(\S+)\s*$", stripped)
-        if not match:
-            match = re.match(r"^\S+\s+(\S+)\s*$", stripped)
         if match:
             user = match.group(1).strip()
             if user and user not in seen:
