@@ -14,7 +14,9 @@ from streamlit_shared.api_payload import (
     validate_discovery_response,
 )
 from streamlit_shared.context import AppContext
+from streamlit_shared.db_auth import render_db_auth_inputs, validate_db_auth_selection
 from streamlit_shared.ui import st_df_safe
+from streamlit_shared.wallet_payload import validate_credential_wallet_rows
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -27,6 +29,10 @@ def render(ctx: AppContext) -> None:
         api_request_required("get", "/dbconnections", api_base, auth),
         validate_dbconnections_response,
     )
+    wallet_rows = validate_payload_or_stop(
+        api_request_required("get", "/credential-wallets", api_base, auth),
+        validate_credential_wallet_rows,
+    )
     conn_names = ["-- Select connection --"] + list(conns.keys())
     discovery_migration_types = {
         "Logical Offline": "OFFLINE_LOGICAL",
@@ -38,14 +44,13 @@ def render(ctx: AppContext) -> None:
     if st.session_state.get("disc_mt") not in discovery_migration_types:
         st.session_state["disc_mt"] = "Logical Offline"
 
-    col_sel, col_pw, col_mt = st.columns([0.5, 0.25, 0.25], vertical_alignment="bottom")
+    col_sel, col_mt = st.columns([0.6, 0.4], vertical_alignment="bottom")
     with col_sel:
         selected_conn = st.selectbox("Connection", conn_names, key="disc_conn")
-    with col_pw:
-        conn_pw = st.text_input("Password", type="password", key="disc_pw", help="Password for the selected connection user")
     with col_mt:
         selected_migration_label = st.selectbox("Migration type", list(discovery_migration_types.keys()), key="disc_mt")
         migration_type = discovery_migration_types[selected_migration_label]
+    auth_payload = render_db_auth_inputs(key_prefix="disc", wallet_rows=wallet_rows)
 
     # -------- helpers (normalize once, then render) --------
     def _format_bytes(val: Optional[float]) -> str:
@@ -199,7 +204,11 @@ def render(ctx: AppContext) -> None:
         if selected_conn == "-- Select connection --":
             st.error("Select a connection.")
         else:
-            payload = {"name": selected_conn, "password": conn_pw or "", "migration_type": migration_type}
+            auth_error = validate_db_auth_selection(auth_payload)
+            if auth_error:
+                st.error(auth_error)
+                st.stop()
+            payload = {"name": selected_conn, "auth": auth_payload, "migration_type": migration_type}
             data = api_request("post", "/dbconnections/discover", api_base, auth, payload=payload)
             if data:
                 snapshot = validate_payload_or_stop(data, validate_discovery_response)
@@ -294,7 +303,6 @@ def render(ctx: AppContext) -> None:
                 {"Field": "NCharset", "Value": ncharset},
                 {"Field": "Timezone file", "Value": (snapshot.get('timezone') or {}).get('VERSION') if isinstance(snapshot.get('timezone'), dict) else snapshot.get('timezone')},
                 {"Field": "Service", "Value": conn_meta.get("service_name")},
-                {"Field": "User", "Value": conn_meta.get("username")},
             ]
             grid = pd.DataFrame(grid_rows)
             grid = grid.dropna(how="all")

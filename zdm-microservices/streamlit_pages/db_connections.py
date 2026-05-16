@@ -17,6 +17,7 @@ from streamlit_shared.api_payload import (
     validate_tls_wallet_upload_response,
 )
 from streamlit_shared.context import AppContext
+from streamlit_shared.db_auth import render_db_auth_inputs, validate_db_auth_selection
 from streamlit_shared.db_types import (
     DB_CONNECTION_ROLE_OPTIONS,
     db_connection_role_label,
@@ -25,6 +26,7 @@ from streamlit_shared.db_types import (
     db_connection_type_options_for_role,
     is_adb_database_type,
 )
+from streamlit_shared.wallet_payload import validate_credential_wallet_rows
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -66,7 +68,6 @@ def render(ctx: AppContext) -> None:
         host = st.text_input("Host", key="conn_host")
         port = st.number_input("Port", min_value=1, max_value=65535, value=1521, step=1, key="conn_port")
         service_name = st.text_input("Service Name", key="conn_service_name")
-        db_user = st.text_input("DB username", key="conn_db_user")
 
         is_adb = is_adb_database_type(db_type)
         if is_adb:
@@ -107,8 +108,8 @@ def render(ctx: AppContext) -> None:
         save_clicked = st.button("Save connection", type="primary", key="conn_save_btn")
 
         if save_clicked:
-            if not all([name, host, service_name, db_user]):
-                st.error("Name, host, service_name, and username are required.")
+            if not all([name, host, service_name]):
+                st.error("Name, host, and service_name are required.")
             elif wallet_needed and not upload_file:
                 st.error("Wallet is required for this connection type/protocol. Please upload the wallet.")
             else:
@@ -117,7 +118,6 @@ def render(ctx: AppContext) -> None:
                     "host": host,
                     "port": int(port),
                     "service_name": service_name,
-                    "username": db_user,
                     "db_type": db_type,
                     "connection_role": connection_role,
                     "protocol": "TCPS" if use_tcps else "TCP",
@@ -205,7 +205,6 @@ def render(ctx: AppContext) -> None:
                             "host": row["Host"],
                             "port": int(row["Port"]),
                             "service_name": row["Service"],
-                            "username": conns[name].get("username", ""),
                             "protocol": row["Protocol"],
                             "allow_tls_without_wallet": bool(row["TLS w/o wallet"]),
                         }
@@ -236,12 +235,16 @@ def render(ctx: AppContext) -> None:
                         st.success(f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list.")
 
         st.markdown("### Test connection")
+        wallet_rows = validate_payload_or_stop(
+            api_request_required("get", "/credential-wallets", api_base, auth),
+            validate_credential_wallet_rows,
+        )
         last_saved = st.session_state.get("last_saved_conn", "-- Select --")
         options = ["-- Select --"] + list(conns.keys())
         default_idx = options.index(last_saved) if last_saved in options else 0
         with st.form("test_connection"):
             test_name = st.selectbox("Connection", options, index=default_idx)
-            temp_password = st.text_input("DB password (not stored)", type="password")
+            auth_payload = render_db_auth_inputs(key_prefix="conn_test", wallet_rows=wallet_rows)
             test_clicked = st.form_submit_button("Test", type="primary")
 
         if test_clicked:
@@ -253,12 +256,13 @@ def render(ctx: AppContext) -> None:
                 if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
                     st.error("Upload a TLS wallet for this connection before testing.")
                     st.stop()
-                if not temp_password:
-                    st.error("Enter the DB password to test this connection.")
+                auth_error = validate_db_auth_selection(auth_payload)
+                if auth_error:
+                    st.error(auth_error)
                     st.stop()
                 payload = {
                     "name": test_name,
-                    "password": temp_password,
+                    "auth": auth_payload,
                 }
                 data = api_request("post", "/dbconnections/test", api_base, auth, payload=payload)
                 if data:

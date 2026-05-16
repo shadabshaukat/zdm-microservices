@@ -407,12 +407,13 @@ def _dbconnection_api_record(
 ) -> Dict[str, Any]:
     if not isinstance(record, dict):
         _api_contract_error(endpoint, f"{record_name} must be an object")
+    if "username" in record:
+        _api_contract_error(endpoint, f"{record_name} has invalid fields (unexpected username)")
     required = {
         "name",
         "host",
         "port",
         "service_name",
-        "username",
         "db_type",
         "connection_role",
         "protocol",
@@ -427,7 +428,6 @@ def _dbconnection_api_record(
     if not isinstance(port, int) or isinstance(port, bool):
         _api_contract_error(endpoint, f"{record_name}.port must be an integer")
     _require_api_text(record, endpoint, record_name, "service_name")
-    _require_api_text(record, endpoint, record_name, "username")
     _require_api_text(record, endpoint, record_name, "db_type")
     role = record.get("connection_role")
     if role not in {"source", "target"}:
@@ -443,7 +443,6 @@ def _dbconnection_api_record(
         "host",
         "port",
         "service_name",
-        "username",
         "db_type",
         "connection_role",
         "protocol",
@@ -1136,6 +1135,46 @@ def _save_zdm_job_snapshot(snapshot: Dict[str, Any]) -> None:
     _save_json_file(_zdm_job_snapshot_file_path(), snapshot)
 
 
+def _snapshot_with_runtime_warning(snapshot: Dict[str, Any], warning: str) -> Dict[str, Any]:
+    payload = dict(snapshot)
+    raw_warnings = payload.get("warnings")
+    warnings = list(raw_warnings) if isinstance(raw_warnings, list) else []
+    if warning:
+        warnings.append(warning)
+    payload["warnings"] = warnings
+    return payload
+
+
+def _called_process_error_text(exc: subprocess.CalledProcessError) -> str:
+    parts = []
+    for value in (getattr(exc, "output", None), getattr(exc, "stdout", None), getattr(exc, "stderr", None)):
+        text = str(value) if value else ""
+        if text and text not in parts:
+            parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _cached_job_query_output(jobid: str, query_error: str) -> str:
+    snapshot = _load_zdm_job_snapshot()
+    jobs = snapshot.get("jobs")
+    if not isinstance(jobs, list):
+        return ""
+
+    for job in jobs:
+        if isinstance(job, dict) and str(job.get("job_id") or "") == jobid:
+            last_refreshed = str(snapshot.get("last_refreshed") or "unknown")
+            return "\n".join(
+                [
+                    f"Live ZDM query failed; showing cached job snapshot from {last_refreshed}.",
+                    "",
+                    query_error,
+                    "",
+                    json.dumps(job, indent=2),
+                ]
+            ).strip()
+    return ""
+
+
 def _clean_zdm_value(value: str) -> str:
     cleaned = value.strip()
     if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"'):
@@ -1435,11 +1474,19 @@ def list_zdm_jobs(
     refresh: bool = False,
     username: str = Depends(verify_credentials),
 ):
-    snapshot = {} if refresh else _load_zdm_job_snapshot()
+    snapshot = _load_zdm_job_snapshot()
     source = "cache"
     if refresh or not snapshot:
-        snapshot = _refresh_zdm_job_snapshot()
-        source = "zdmcli"
+        try:
+            snapshot = _refresh_zdm_job_snapshot()
+            source = "zdmcli"
+        except HTTPException as exc:
+            if not snapshot:
+                snapshot = {"last_refreshed": None, "jobs": [], "warnings": [str(exc.detail)]}
+                source = "zdmcli-unavailable"
+            else:
+                snapshot = _snapshot_with_runtime_warning(snapshot, str(exc.detail))
+                source = "cache"
 
     jobs = snapshot.get("jobs", [])
     if not isinstance(jobs, list):
@@ -1682,7 +1729,7 @@ def _load_connection_or_404(name: str) -> Dict[str, Any]:
 def _collect_db_snapshot(
     conn_info: Dict[str, Any],
     conn_name: str,
-    password: Optional[str] = None,
+    auth_kwargs: Dict[str, Any],
     wallet_location: Optional[str] = None,
     protocol_override: Optional[str] = None,
     ssl_server_dn_match: Optional[bool] = None,
@@ -1698,9 +1745,7 @@ def _collect_db_snapshot(
         ssl_server_dn_match=ssl_server_dn_match,
     )
 
-    connect_kwargs: Dict[str, Any] = {"user": conn_info["username"], "dsn": dsn}
-    if password:
-        connect_kwargs["password"] = password
+    connect_kwargs: Dict[str, Any] = {"dsn": dsn, **auth_kwargs}
     if wallet_location:
         connect_kwargs["config_dir"] = wallet_location
         connect_kwargs["wallet_location"] = wallet_location
@@ -1710,7 +1755,7 @@ def _collect_db_snapshot(
     snapshot: Dict[str, Any] = {
         "connection": {
             k: conn_info[k]
-            for k in ["host", "port", "service_name", "username", "protocol"]
+            for k in ["host", "port", "service_name", "protocol"]
             if k in conn_info
         },
         "connection_name": conn_name,
@@ -1871,22 +1916,25 @@ def get_discovery_dir() -> str:
     return path
 
 
-def resolve_tls_wallet_path(wallet_name: Optional[str], wallet_path: Optional[str]) -> str:
-    if wallet_path:
-        return wallet_path
+def resolve_cred_wallet_path(wallet_name: Optional[str]) -> str:
     if not wallet_name:
-        raise HTTPException(status_code=400, detail="tls_wallet_name is required when wallet_path is not provided")
-    base_dir = get_tls_wallets_dir()
-    return os.path.join(base_dir, wallet_name)
-
-
-def resolve_cred_wallet_path(wallet_name: Optional[str], wallet_path: Optional[str]) -> str:
-    if wallet_path:
-        return wallet_path
-    if not wallet_name:
-        raise HTTPException(status_code=400, detail="wallet_name is required when wallet_path is not provided")
+        raise HTTPException(status_code=400, detail="wallet_name is required")
     base_dir = get_cred_wallets_dir()
-    return os.path.join(base_dir, wallet_name)
+    return os.path.join(base_dir, _validate_wallet_name(wallet_name))
+
+
+def _validate_wallet_name(name: str) -> str:
+    name = (name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="wallet name is required")
+    if any(x in name for x in ("/", "\\", "..")):
+        raise HTTPException(status_code=400, detail="wallet name contains illegal path characters")
+    if not _SAFE_PROJECT_RE.match(name):
+        raise HTTPException(
+            status_code=400,
+            detail="wallet name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        )
+    return name
 
 
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
@@ -1926,8 +1974,20 @@ def query(jobid: str, project: Optional[str] = None, username: str = Depends(ver
         return {"status": "success", "output": output}
     except subprocess.CalledProcessError as e:
         # It's better to log the actual error message for debugging purposes
-        error_message = f"Query Job failed with return code {e.returncode}: {e.output}"
-        raise HTTPException(status_code=500, detail=error_message)
+        error_text = _called_process_error_text(e)
+        error_message = f"Query Job failed with return code {e.returncode}: {error_text}"
+        cached_output = _cached_job_query_output(jobid, error_message)
+        if cached_output:
+            return {"status": "success", "output": cached_output}
+        return {
+            "status": "success",
+            "output": "\n\n".join(
+                [
+                    "Live ZDM query failed; no cached job snapshot is available.",
+                    error_message,
+                ]
+            ),
+        }
 
 
 class DBConnectionParams(StrictRequestModel):
@@ -1935,21 +1995,28 @@ class DBConnectionParams(StrictRequestModel):
     host: str
     port: int
     service_name: str
-    username: str
     db_type: Optional[str] = None
     connection_role: Optional[str] = None
     protocol: Optional[str] = "TCP"
     allow_tls_without_wallet: Optional[bool] = False
 
 
+class DBAuthParams(StrictRequestModel):
+    method: str
+    username: Optional[str] = None
+    password: Optional[str] = None
+    wallet_name: Optional[str] = None
+
+
 class DBConnectionCheckParams(StrictRequestModel):
     name: str
-    password: str  # required for connectivity
+    auth: DBAuthParams
     run_snapshot: bool = False
+
 
 class DBConnectionDiscoverParams(StrictRequestModel):
     name: str
-    password: str  # required for discovery
+    auth: DBAuthParams
     migration_type: str  # OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL, HYBRID_OFFLINE
     role: Optional[str] = None  # optional tag for future compare views
 
@@ -1973,6 +2040,7 @@ def create_db_connection(params: DBConnectionParams, username: str = Depends(ver
     connections = load_connections()
     existing = connections.get(name)
     payload = dict(existing) if isinstance(existing, dict) else {}
+    payload.pop("username", None)
     incoming = _model_to_supplied_dict(params) if isinstance(existing, dict) else _model_to_dict(params)
     for key, value in incoming.items():
         if value is None and key in payload:
@@ -2151,12 +2219,40 @@ def upload_tls_wallet(name: str, wallet: UploadFile = File(...), username: str =
     }
 
 
+def _resolve_db_auth(auth: DBAuthParams) -> Tuple[Dict[str, Any], Optional[str]]:
+    method = (auth.method or "").strip().lower()
+    if method == "password":
+        if auth.wallet_name:
+            raise HTTPException(status_code=400, detail="auth.wallet_name is not valid for password auth")
+        db_user = (auth.username or "").strip()
+        password = auth.password or ""
+        if not db_user:
+            raise HTTPException(status_code=400, detail="auth.username is required for password auth")
+        if not password:
+            raise HTTPException(status_code=400, detail="auth.password is required for password auth")
+        return {"user": db_user, "password": password}, None
+
+    if method == "credential_wallet":
+        if auth.username or auth.password:
+            raise HTTPException(status_code=400, detail="auth.username and auth.password are not valid for credential wallet auth")
+        wallet_name = (auth.wallet_name or "").strip()
+        wallet_path = resolve_cred_wallet_path(wallet_name)
+        if not os.path.isdir(wallet_path):
+            raise HTTPException(status_code=404, detail=f"Credential wallet '{wallet_name}' not found")
+        credential_username = _credential_wallet_username(wallet_path)
+        if not credential_username:
+            raise HTTPException(status_code=400, detail="Selected wallet has no credential. Add a credential first.")
+        return {"user": credential_username}, wallet_path
+
+    raise HTTPException(status_code=400, detail="auth.method must be password or credential_wallet")
+
+
 def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDiscoverParams], run_snapshot: bool, migration_type: Optional[str] = None):
     if run_snapshot:
         migration_type = normalize_discovery_migration_type(migration_type)
 
     conn_info = _load_connection_or_404(params.name)
-    test_password = params.password
+    auth_kwargs, credential_wallet_location = _resolve_db_auth(params.auth)
     wallet_location: Optional[str] = None
 
     protocol = (conn_info.get("protocol") or "").upper()
@@ -2168,6 +2264,7 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
 
     protocol = "TCPS" if protocol == "TCPS" else "TCP"
     ssl_match = True if (protocol == "TCPS" and conn_info.get("allow_tls_without_wallet")) else None
+    active_wallet_location = credential_wallet_location or wallet_location
 
     try:
         oracledb = require_oracledb()
@@ -2178,10 +2275,10 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
             protocol,
             ssl_server_dn_match=ssl_match,
         )
-        connect_kwargs: Dict[str, Any] = {"user": conn_info["username"], "dsn": dsn, "password": test_password}
-        if wallet_location:
-            connect_kwargs["config_dir"] = wallet_location
-            connect_kwargs["wallet_location"] = wallet_location
+        connect_kwargs: Dict[str, Any] = {"dsn": dsn, **auth_kwargs}
+        if active_wallet_location:
+            connect_kwargs["config_dir"] = active_wallet_location
+            connect_kwargs["wallet_location"] = active_wallet_location
 
         with oracledb.connect(**connect_kwargs) as connection:
             if not run_snapshot:
@@ -2197,8 +2294,8 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
         snapshot = _collect_db_snapshot(
             conn_info,
             conn_name=params.name,
-            password=test_password,
-            wallet_location=wallet_location,
+            auth_kwargs=auth_kwargs,
+            wallet_location=active_wallet_location,
             protocol_override=protocol,
             ssl_server_dn_match=ssl_match,
             migration_type=migration_type,
@@ -2385,8 +2482,53 @@ def read_job_log(params: LogFileReadParams, username: str = Depends(verify_crede
         raise HTTPException(status_code=500, detail=f"Error reading file: {str(e)}")
 
 class WalletFileParams(StrictRequestModel):
-    wallet_name: Optional[str] = None
-    wallet_path: Optional[str] = None
+    wallet_name: str
+
+
+def _parse_mkstore_credential_users(output: str) -> List[str]:
+    users: List[str] = []
+    seen = set()
+    for line in (output or "").splitlines():
+        stripped = line.strip()
+        if not stripped or "connect_string username" in stripped.lower():
+            continue
+        match = re.match(r"^\d+\s*:\s+\S+\s+(\S+)\s*$", stripped)
+        if not match:
+            match = re.match(r"^\S+\s+(\S+)\s*$", stripped)
+        if match:
+            user = match.group(1).strip()
+            if user and user not in seen:
+                seen.add(user)
+                users.append(user)
+    return users
+
+
+def _list_credential_wallet_users(wallet_path: str) -> List[str]:
+    script = "\n".join(
+        [
+            "#!/bin/bash",
+            f"$ZDM_HOME/bin/mkstore -wrl {shlex.quote(wallet_path)} -listCredential",
+        ]
+    )
+    script_path = write_temp_script("list_credential_", script)
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        error_text = _called_process_error_text(exc)
+        raise HTTPException(status_code=500, detail=f"List credentials failed with return code {exc.returncode}: {error_text}") from exc
+    return _parse_mkstore_credential_users(result.stdout)
+
+
+def _credential_wallet_username(wallet_path: str) -> Optional[str]:
+    users = _list_credential_wallet_users(wallet_path)
+    return users[0] if users else None
+
 
 @app.get("/tls-wallets")
 def list_tls_wallets(username: str = Depends(verify_credentials)):
@@ -2406,19 +2548,30 @@ def list_credential_wallets(username: str = Depends(verify_credentials)):
     for name in sorted(os.listdir(base_dir)):
         path = os.path.join(base_dir, name)
         if os.path.isdir(path):
-            wallets.append({"name": name, "path": path})
+            wallets.append({"name": name, "path": path, "credential_username": _credential_wallet_username(path)})
     return {"wallets": wallets}
+
+
+@app.delete("/credential-wallets/{name}")
+def delete_credential_wallet(name: str, username: str = Depends(verify_credentials)):
+    name = _validate_wallet_name(name)
+    wallet_path = resolve_cred_wallet_path(name)
+    if not os.path.isdir(wallet_path):
+        raise HTTPException(status_code=404, detail=f"Credential wallet '{name}' not found")
+    shutil.rmtree(wallet_path)
+    return {"status": "success", "message": f"Credential wallet '{name}' deleted", "name": name}
 
 @app.post("/wallets/ora-pki")
 def create_wallet(params: WalletFileParams, username: str = Depends(verify_credentials)):
-    wallet_path = resolve_cred_wallet_path(params.wallet_name, params.wallet_path)
+    wallet_path = resolve_cred_wallet_path(params.wallet_name)
+    if os.path.exists(wallet_path):
+        raise HTTPException(status_code=409, detail="Credential wallet already exists")
     create_wallet_script = [
         "#!/bin/bash",
-        f"$ZDM_HOME/bin/orapki wallet create -wallet {wallet_path} -auto_login_only"
+        f"$ZDM_HOME/bin/orapki wallet create -wallet {shlex.quote(wallet_path)} -auto_login_only"
     ]
 
-    # Join the script lines into a single command
-    create_wallet_command = " \\\n".join(create_wallet_script)
+    create_wallet_command = "\n".join(create_wallet_script)
 
     script_path = write_temp_script("create_wallet_", create_wallet_command)
 
@@ -2442,23 +2595,30 @@ def create_wallet(params: WalletFileParams, username: str = Depends(verify_crede
         raise HTTPException(status_code=500, detail=error_message)
 
 class MkstoreParams(StrictRequestModel):
-    wallet_name: Optional[str] = None
-    wallet_path: Optional[str] = None
+    wallet_name: str
     user: str
     password: str
 
 @app.post("/wallets/mkstore-credential")
 def create_credential(params: MkstoreParams, username: str = Depends(verify_credentials)):
-    wallet_path = resolve_cred_wallet_path(params.wallet_name, params.wallet_path)
-    user = params.user
+    wallet_path = resolve_cred_wallet_path(params.wallet_name)
+    if not os.path.isdir(wallet_path):
+        raise HTTPException(status_code=404, detail="Credential wallet not found")
+    user = params.user.strip()
+    if not user:
+        raise HTTPException(status_code=400, detail="user is required")
+    if _credential_wallet_username(wallet_path):
+        raise HTTPException(
+            status_code=409,
+            detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
+        )
     password = params.password
     create_credential_script = [
         "#!/bin/bash",
-        f"$ZDM_HOME/bin/mkstore -wrl {wallet_path} -createCredential store {user} '{password}'"
+        f"$ZDM_HOME/bin/mkstore -wrl {shlex.quote(wallet_path)} -createCredential store {shlex.quote(user)} {shlex.quote(password)}"
     ]
 
-    # Join the script lines into a single command
-    create_credential_command = " \\\n".join(create_credential_script)
+    create_credential_command = "\n".join(create_credential_script)
 
     script_path = write_temp_script("create_credential_", create_credential_command)
 

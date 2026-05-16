@@ -100,7 +100,6 @@ def _dbconnection_record(record_name: str, record: Mapping[str, Any], endpoint: 
         "host",
         "port",
         "service_name",
-        "username",
         "db_type",
         "connection_role",
         "protocol",
@@ -124,7 +123,6 @@ def _dbconnection_record(record_name: str, record: Mapping[str, Any], endpoint: 
     if not isinstance(port, int) or isinstance(port, bool):
         _raise_contract_error(endpoint, f"{record_name}.port must be an integer")
     _text(record, endpoint, "service_name")
-    _text(record, endpoint, "username")
     _text(record, endpoint, "db_type")
     role = record.get("connection_role")
     if role not in {"source", "target"}:
