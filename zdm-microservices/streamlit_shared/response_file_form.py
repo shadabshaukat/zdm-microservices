@@ -99,7 +99,7 @@ def _section_field_specs(
     profile: MigrationProfile,
     required_context: Mapping[str, Any] | None = None,
 ) -> Tuple[FieldSpec, ...]:
-    return _field_specs(profile.section_field_keys(section), profile, required_context)
+    return _field_specs(profile.section_field_keys(section, required_context), profile, required_context)
 
 
 def profile_section_field_specs(
@@ -118,7 +118,7 @@ def profile_medium_field_specs(
 ) -> Tuple[FieldSpec, ...]:
     profile = _profile_for_method(migration_method)
     context = required_context or {"DATA_TRANSFER_MEDIUM": normalize_method(medium)}
-    return _field_specs(profile.medium_field_keys(medium), profile, context)
+    return _field_specs(profile.medium_field_keys(medium, context=context), profile, context)
 
 
 def profile_medium_unsectioned_field_specs(
@@ -128,7 +128,7 @@ def profile_medium_unsectioned_field_specs(
 ) -> Tuple[FieldSpec, ...]:
     profile = _profile_for_method(migration_method)
     context = required_context or {"DATA_TRANSFER_MEDIUM": normalize_method(medium)}
-    return _field_specs(profile.medium_unsectioned_field_keys(medium), profile, context)
+    return _field_specs(profile.medium_unsectioned_field_keys(medium, context=context), profile, context)
 
 
 def profile_medium_section_field_specs(
@@ -139,7 +139,7 @@ def profile_medium_section_field_specs(
 ) -> Tuple[FieldSpec, ...]:
     profile = _profile_for_method(migration_method)
     context = required_context or {"DATA_TRANSFER_MEDIUM": normalize_method(medium)}
-    return _field_specs(profile.medium_section_field_keys(medium, section), profile, context)
+    return _field_specs(profile.medium_section_field_keys(medium, section, context=context), profile, context)
 
 
 def profile_response_layout(migration_method: Any) -> List[Dict[str, Any]]:
@@ -463,13 +463,18 @@ def build_responsefile_payload(
     payload.update(profile.decision_input_response_values(values))
     _copy_present_keys(payload, values, profile.decision_input_response_field_keys())
     _copy_present_keys(payload, values, profile.derived_response_field_keys())
+    active_context = {
+        **values,
+        "MIGRATION_METHOD": migration_method,
+        "DATA_TRANSFER_MEDIUM": medium,
+    }
     common_keys = [
         key
-        for key in profile.common_response_field_keys()
+        for key in profile.common_response_field_keys(active_context)
         if key not in {"DATAPUMPSETTINGS_METADATAREMAPS", "INCLUDEOBJECTS"}
     ]
     _copy_profile_keys(profile, payload, values, common_keys)
-    _copy_profile_keys(profile, payload, values, profile.medium_field_keys(medium))
+    _copy_profile_keys(profile, payload, values, profile.medium_field_keys(medium, context=active_context))
     include_schemas = values.get("include_schemas")
     if include_schemas:
         payload["include_schemas"] = include_schemas

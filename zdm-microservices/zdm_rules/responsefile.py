@@ -86,21 +86,26 @@ def _validate_response_file_values(profile: MigrationProfile, values: Mapping[st
     if medium not in profile.medium_keys():
         raise ValueError(f"Unsupported DATA_TRANSFER_MEDIUM for {profile.method}: {medium}")
 
-    allowed = set(profile.all_response_field_keys(medium))
+    allowed = set(profile.all_response_field_keys(medium, context=values))
     allowed.update({"project", "filename"})
 
     for key in values.keys():
         if key not in allowed:
             raise ValueError(f"Unsupported response file parameter for {profile.method}: {key}")
 
-    _validate_additional_parameters(profile, medium, values.get("additional"))
+    _validate_additional_parameters(profile, medium, values.get("additional"), values)
 
     validation_errors = profile.response_validation_errors(values)
     if validation_errors:
         raise ValueError("; ".join(validation_errors))
 
 
-def _validate_additional_parameters(profile: MigrationProfile, medium: str, additional: Any) -> None:
+def _validate_additional_parameters(
+    profile: MigrationProfile,
+    medium: str,
+    additional: Any,
+    values: Mapping[str, Any],
+) -> None:
     if additional in (None, ""):
         return
     if not isinstance(additional, Mapping):
@@ -108,7 +113,7 @@ def _validate_additional_parameters(profile: MigrationProfile, medium: str, addi
 
     managed_keys = {
         str(key).upper()
-        for key in profile.all_response_field_keys(medium)
+        for key in profile.all_response_field_keys(medium, context=values)
         if key not in {"additional", "project", "filename"}
     }
     for key in additional.keys():

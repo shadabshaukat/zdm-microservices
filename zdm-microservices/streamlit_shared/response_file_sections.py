@@ -368,6 +368,8 @@ def _render_section_entries(
     values: Dict[str, Any] = {}
     remaps: List[List[str]] = []
     for index, entry in enumerate(entries or []):
+        if not _layout_entry_has_visible_fields(selection, entry):
+            continue
         if isinstance(entry, str):
             if first_inline and index == 0:
                 rendered = _render_section(selection, entry, wallet_names, wallet_map)
@@ -389,6 +391,17 @@ def _render_section_entries(
         values.update(rendered.values)
         remaps.extend(rendered.remaps)
     return RenderedFields(values=values, remaps=remaps)
+
+
+def _layout_entry_has_visible_fields(selection: ResponseFileSelection, entry: Any) -> bool:
+    if isinstance(entry, str):
+        return bool(_section_specs(selection, entry))
+    if isinstance(entry, Mapping):
+        return any(
+            _layout_entry_has_visible_fields(selection, child)
+            for child in entry.get("sections") or []
+        )
+    return True
 
 
 def _render_medium_layout(

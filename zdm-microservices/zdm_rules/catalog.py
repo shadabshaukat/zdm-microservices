@@ -15,6 +15,16 @@ from zdm_rules.common import normalize_rsp_value
 
 PROFILE_DIR = Path(__file__).resolve().parent / "definitions" / "profiles"
 FIELD_CONTROL_TYPES = {"text", "select", "number", "wallet", "metadata_remaps", "include_schemas"}
+RESPONSE_FIELD_CONFIG_KEYS = {
+    "control",
+    "default",
+    "label",
+    "max_value",
+    "min_value",
+    "options",
+    "show_when",
+    "step",
+}
 JOB_RUN_CONTROL_TYPES = {"checkbox", "multiselect", "schedule", "select", "text", "textarea"}
 JOB_RUN_CONTROL_KEYS = {
     "advisor_mode",
@@ -379,6 +389,16 @@ class MigrationProfile:
                 )
 
     def _validate_response_field_config(self, key: str, config: Mapping[str, Any]) -> None:
+        unknown_keys = sorted(
+            str(config_key)
+            for config_key in config.keys()
+            if str(config_key) not in RESPONSE_FIELD_CONFIG_KEYS
+        )
+        if unknown_keys:
+            raise ValueError(
+                f"{self.path} response_file.fields.{key} has invalid keys: "
+                + ", ".join(unknown_keys)
+            )
         control = str(config.get("control") or "text")
         if control not in FIELD_CONTROL_TYPES:
             raise ValueError(
@@ -438,16 +458,20 @@ class MigrationProfile:
         if missing:
             raise ValueError(f"{self.path} response_file.ui.section_labels missing {label}: " + ", ".join(missing))
 
-    def common_response_field_keys(self) -> List[str]:
+    def common_response_field_keys(self, context: Optional[Mapping[str, Any]] = None) -> List[str]:
         sections = self._response_file_config().get("sections") or {}
-        return _flatten_field_groups(sections)
+        return self._visible_field_keys(_flatten_field_groups(sections), context)
 
-    def section_field_keys(self, section: str) -> List[str]:
+    def section_field_keys(
+        self,
+        section: str,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         sections = self._response_file_config().get("sections") or {}
         if not isinstance(sections, Mapping):
             return []
         value = _nested_section_value(sections, section)
-        return _flatten_field_groups(value)
+        return self._visible_field_keys(_flatten_field_groups(value), context)
 
     def common_job_field_keys(self) -> List[str]:
         fields = self._job_submission_config().get("fields") or []
@@ -495,20 +519,30 @@ class MigrationProfile:
     def decision_input_control(self, name: str) -> Mapping[str, Any]:
         return self.decision_input_controls.get(str(name), {})
 
-    def medium_field_keys(self, medium: Any, include_advanced: bool = False) -> List[str]:
+    def medium_field_keys(
+        self,
+        medium: Any,
+        include_advanced: bool = False,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         config = self.medium(medium)
         keys = [str(key) for key in config.get("fields") or []]
         if include_advanced:
             keys += [str(key) for key in config.get("advanced_fields") or []]
-        return keys
+        return self._visible_field_keys(keys, context)
 
-    def medium_section_field_keys(self, medium: Any, section: str) -> List[str]:
+    def medium_section_field_keys(
+        self,
+        medium: Any,
+        section: str,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         config = self.medium(medium)
         sections = config.get("sections") or {}
         if not isinstance(sections, Mapping):
             return []
         value = _nested_section_value(sections, section)
-        return _flatten_field_groups(value)
+        return self._visible_field_keys(_flatten_field_groups(value), context)
 
     def medium_section_names(self, medium: Any) -> List[str]:
         config = self.medium(medium)
@@ -517,9 +551,16 @@ class MigrationProfile:
             return []
         return [str(key) for key in sections.keys()]
 
-    def medium_unsectioned_field_keys(self, medium: Any) -> List[str]:
+    def medium_unsectioned_field_keys(
+        self,
+        medium: Any,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         config = self.medium(medium)
-        fields = [str(key) for key in config.get("fields") or []]
+        fields = self._visible_field_keys(
+            [str(key) for key in config.get("fields") or []],
+            context,
+        )
         sections = config.get("sections") or {}
         if not isinstance(sections, Mapping) or not sections:
             return fields
@@ -542,14 +583,19 @@ class MigrationProfile:
             return title
         raise ValueError(f"{self.path} response_file.ui.medium_fields_title must be a non-empty string")
 
-    def all_response_field_keys(self, medium: Any = None, include_advanced: bool = False) -> List[str]:
+    def all_response_field_keys(
+        self,
+        medium: Any = None,
+        include_advanced: bool = False,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> List[str]:
         keys = ["MIGRATION_METHOD", "DATA_TRANSFER_MEDIUM"]
         keys += self.decision_input_response_field_keys()
         keys += self.derived_response_field_keys()
-        keys += self.common_response_field_keys()
+        keys += self.common_response_field_keys(context)
         media_to_include = [normalize_method(medium)] if medium else self.medium_keys()
         for medium_key in media_to_include:
-            keys += self.medium_field_keys(medium_key, include_advanced=include_advanced)
+            keys += self.medium_field_keys(medium_key, include_advanced=include_advanced, context=context)
         keys += ["include_schemas", "DATAPUMPSETTINGS_METADATAREMAPS", "additional"]
         return _unique(keys)
 
@@ -701,6 +747,16 @@ class MigrationProfile:
 
         return False
 
+    def field_visible(
+        self,
+        key: str,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> bool:
+        if context is None:
+            return True
+        config = self.field(key)
+        return condition_matches(config.get("show_when"), self._condition_context(context))
+
     def decision_input_response_values(self, values: Mapping[str, Any]) -> Dict[str, Any]:
         controls = self.decision_input_controls
         context = self._decision_input_context(values, controls)
@@ -758,6 +814,13 @@ class MigrationProfile:
             return None
         values = platform_mediums.get(normalize_method(platform))
         return {normalize_method(value) for value in values} if values else set()
+
+    def _visible_field_keys(
+        self,
+        keys: Iterable[str],
+        context: Optional[Mapping[str, Any]],
+    ) -> List[str]:
+        return [str(key) for key in keys if self.field_visible(str(key), context)]
 
     def _decision_inputs_config(self) -> Mapping[str, Any]:
         config = self.data.get("decision_inputs") or {}

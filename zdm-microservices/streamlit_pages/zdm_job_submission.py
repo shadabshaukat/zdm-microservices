@@ -50,7 +50,7 @@ def render(ctx: AppContext) -> None:
     with c2:
         if st.button("View", key="runjob_view_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
-                st.session_state["runjob_view_job"] = saved_sel
+                prepare_saved_job_view(st.session_state, saved_sel)
                 st.rerun()
     with c3:
         if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
@@ -188,6 +188,11 @@ def should_show_current_job_progress(session_state: Mapping[str, Any]) -> bool:
         session_state.get("runjob_show_current_progress")
         and session_state.get(RUNJOB_SUBMISSION_RESULT_KEY)
     )
+
+
+def prepare_saved_job_view(session_state: MutableMapping[str, Any], saved_job_name: str) -> None:
+    clear_current_job_progress(session_state)
+    session_state["runjob_view_job"] = saved_job_name
 
 
 def clear_current_job_progress(session_state: MutableMapping[str, Any]) -> None:
