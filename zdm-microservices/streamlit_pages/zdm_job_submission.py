@@ -50,7 +50,8 @@ def render(ctx: AppContext) -> None:
     with c2:
         if st.button("View", key="runjob_view_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
-                prepare_saved_job_view(st.session_state, saved_sel)
+                clear_current_job_progress(st.session_state)
+                st.session_state["runjob_view_job"] = saved_sel
                 st.rerun()
     with c3:
         if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
@@ -111,76 +112,86 @@ def render(ctx: AppContext) -> None:
             else:
                 st.info("No command returned for this saved job.")
 
-    # -----------------------------
-    # Current job progress (full width)
-    # -----------------------------
+    render_current_job_progress(api_base, auth)
+
+
+def render_current_job_progress(api_base: str, auth: Any) -> None:
+    progress_slot = st.empty()
     last_submission_result = st.session_state.get(RUNJOB_SUBMISSION_RESULT_KEY)
     if not should_show_current_job_progress(st.session_state):
+        progress_slot.empty()
         return
 
-    st.markdown("### Current job progress")
-    validated_submission = validate_payload_or_stop(last_submission_result, validate_run_job_response)
-    submitted_job_id = (validated_submission.get("job_id") or "").strip()
-    submitted_name = st.session_state.get(RUNJOB_SUBMISSION_NAME_KEY) or "saved job"
-    script_path = validated_submission.get("script_path")
-    if not submitted_job_id:
-        st.warning("No ZDM job ID is available for the latest submission.")
-        output = validated_submission.get("output") or ""
-        if output:
-            with st.expander("Submission output", expanded=False):
-                st.text_area("Submission output", value=str(output), height=220, disabled=True, label_visibility="collapsed")
-        return
+    with progress_slot.container():
+        st.markdown("### Current job progress")
+        validated_submission = validate_payload_or_stop(last_submission_result, validate_run_job_response)
+        submitted_job_id = (validated_submission.get("job_id") or "").strip()
+        submitted_name = st.session_state.get(RUNJOB_SUBMISSION_NAME_KEY) or "saved job"
+        script_path = validated_submission.get("script_path")
+        if not submitted_job_id:
+            st.warning("No ZDM job ID is available for the latest submission.")
+            output = validated_submission.get("output") or ""
+            if output:
+                with st.expander("Submission output", expanded=False):
+                    st.text_area(
+                        "Submission output",
+                        value=str(output),
+                        height=220,
+                        disabled=True,
+                        label_visibility="collapsed",
+                    )
+            return
 
-    st.caption(f"Tracking saved job '{submitted_name}' as ZDM job {submitted_job_id}.")
-    if script_path:
-        st.caption(f"Run script: {script_path}")
+        st.caption(f"Tracking saved job '{submitted_name}' as ZDM job {submitted_job_id}.")
+        if script_path:
+            st.caption(f"Run script: {script_path}")
 
-    auto_refresh = st.toggle(
-        "Auto-refresh (every 5 seconds)",
-        value=True,
-        key="runjob_current_job_autorefresh",
-    )
-
-    def _poll_current_job() -> None:
-        data = api_request_required("get", f"/jobs/{submitted_job_id}", api_base, auth)
-        st.session_state["runjob_current_job_query_status"] = validate_payload_or_stop(
-            data,
-            validate_job_query_response,
-        )
-        st.session_state["runjob_current_job_query_job_id"] = submitted_job_id
-
-    def _render_current_job(should_poll: bool) -> None:
-        cached_job_id = st.session_state.get("runjob_current_job_query_job_id")
-        cached_status = st.session_state.get("runjob_current_job_query_status")
-        if should_poll and cached_job_id == submitted_job_id and isinstance(cached_status, dict):
-            should_poll = query_result_should_auto_refresh(cached_status)
-
-        if should_poll or cached_job_id != submitted_job_id:
-            _poll_current_job()
-
-        query_status = validate_payload_or_stop(
-            st.session_state.get("runjob_current_job_query_status"),
-            validate_job_query_response,
-        )
-        parsed = render_job_progress(submitted_job_id, query_status)
-        st.session_state["runjob_current_job_should_refresh"] = should_auto_refresh_status(
-            parsed.get("zdm_status") or ""
+        auto_refresh = st.toggle(
+            "Auto-refresh (every 5 seconds)",
+            value=True,
+            key="runjob_current_job_autorefresh",
         )
 
-    auto_refresh_active = (
-        auto_refresh
-        and submitted_job_id
-        and st.session_state.get("runjob_current_job_should_refresh", True)
-    )
-    if auto_refresh_active and hasattr(st, "fragment"):
-        @st.fragment(run_every=5)
-        def _current_job_fragment():
-            _render_current_job(should_poll=True)
-        _current_job_fragment()
-    else:
-        if auto_refresh_active and not hasattr(st, "fragment"):
-            st.caption("Auto-refresh requires a newer Streamlit version (st.fragment).")
-        _render_current_job(should_poll=False)
+        def _poll_current_job() -> None:
+            data = api_request_required("get", f"/jobs/{submitted_job_id}", api_base, auth)
+            st.session_state["runjob_current_job_query_status"] = validate_payload_or_stop(
+                data,
+                validate_job_query_response,
+            )
+            st.session_state["runjob_current_job_query_job_id"] = submitted_job_id
+
+        def _render_current_job(should_poll: bool) -> None:
+            cached_job_id = st.session_state.get("runjob_current_job_query_job_id")
+            cached_status = st.session_state.get("runjob_current_job_query_status")
+            if should_poll and cached_job_id == submitted_job_id and isinstance(cached_status, dict):
+                should_poll = query_result_should_auto_refresh(cached_status)
+
+            if should_poll or cached_job_id != submitted_job_id:
+                _poll_current_job()
+
+            query_status = validate_payload_or_stop(
+                st.session_state.get("runjob_current_job_query_status"),
+                validate_job_query_response,
+            )
+            parsed = render_job_progress(submitted_job_id, query_status)
+            st.session_state["runjob_current_job_should_refresh"] = should_auto_refresh_status(
+                parsed.get("zdm_status") or ""
+            )
+
+        auto_refresh_active = (
+            auto_refresh
+            and submitted_job_id
+            and st.session_state.get("runjob_current_job_should_refresh", True)
+        )
+        if auto_refresh_active and hasattr(st, "fragment"):
+            @st.fragment(run_every=5)
+            def _current_job_fragment():
+                _render_current_job(should_poll=True)
+            _current_job_fragment()
+        else:
+            if auto_refresh_active and not hasattr(st, "fragment"):
+                st.caption("Auto-refresh requires a newer Streamlit version (st.fragment).")
+            _render_current_job(should_poll=False)
 
 
 def should_show_current_job_progress(session_state: Mapping[str, Any]) -> bool:
@@ -188,11 +199,6 @@ def should_show_current_job_progress(session_state: Mapping[str, Any]) -> bool:
         session_state.get("runjob_show_current_progress")
         and session_state.get(RUNJOB_SUBMISSION_RESULT_KEY)
     )
-
-
-def prepare_saved_job_view(session_state: MutableMapping[str, Any], saved_job_name: str) -> None:
-    clear_current_job_progress(session_state)
-    session_state["runjob_view_job"] = saved_job_name
 
 
 def clear_current_job_progress(session_state: MutableMapping[str, Any]) -> None:

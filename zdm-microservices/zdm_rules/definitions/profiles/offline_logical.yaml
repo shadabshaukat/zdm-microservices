@@ -31,7 +31,7 @@ response_file:
       target_database: Target database
       transfer_settings: Transfer settings
       oci_authentication: OCI authentication
-      data_pump: Data Pump options
+      data_pump: Data Pump settings
       tablespace: Tablespace remap
       remaps: Metadata remaps
       schemas: Schemas
@@ -41,7 +41,7 @@ response_file:
         tabs: [source_database, target_database]
       - type: medium
       - type: sections
-        title: Migration options
+        title: Data Pump settings
         sections:
           - data_pump
           - title: Schemas and remaps
