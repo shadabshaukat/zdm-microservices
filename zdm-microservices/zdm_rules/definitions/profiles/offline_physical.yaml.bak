@@ -1,0 +1,72 @@
+method: OFFLINE_PHYSICAL
+migration_type: Physical
+default_medium: OSS
+
+platform_mediums:
+  VMDB: [OSS]
+  EXACS: [OSS]
+  EXACC: [OSS, NFS]
+  NON_CLOUD: [OSS]
+
+validation:
+  defaults:
+    PLATFORM_TYPE:
+      value: VMDB
+
+  required:
+    - key: HOST
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: OSS
+    - key: OPC_CONTAINER
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: OSS
+    - key: BACKUP_PATH
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: NFS
+
+fields:
+  PLATFORM_TYPE:
+    label: Platform type
+    control: select
+    options: [VMDB, EXACS, EXACC, NON_CLOUD]
+    default: VMDB
+  HOST:
+    label: Object Storage endpoint
+  OPC_CONTAINER:
+    label: Bucket / container
+  BACKUP_PATH:
+    label: Backup path
+
+common_response_fields:
+  target:
+    - PLATFORM_TYPE
+
+common_job_fields:
+  - sourcedb
+  - sourcesid
+  - sourcenode
+  - srcauth
+  - srcarg1
+  - srcarg2
+  - srcarg3
+  - sourcesyswallet
+  - targetnode
+  - tgtauth
+  - tgtarg1
+  - tgtarg2
+  - tgtarg3
+
+media:
+  OSS:
+    fields:
+      - HOST
+      - OPC_CONTAINER
+  NFS:
+    show_when:
+      field_equals:
+        PLATFORM_TYPE: EXACC
+    fields:
+      - BACKUP_PATH

@@ -1,0 +1,380 @@
+schema_version: 1
+zdm_version: "26.1"
+
+environments:
+  ORACLE_DATABASE:
+    display:
+      group: General
+      name: Oracle Database
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: USER_MANAGED
+      physical:
+        target: NON_CLOUD
+    notes:
+      - "Physical source must run Linux-x86-64; other source platforms require non-physical workflows."
+      - "Physical target must be a directly managed database server with OS user, SSH, and storage/network access."
+      - "Online physical requires Data Guard-capable Enterprise Edition; Standard Edition uses offline physical."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ORACLE
+      physical_target:
+        PLATFORM_TYPE: NON_CLOUD
+
+  ONPREM_EXADATA:
+    display:
+      group: On-premises
+      name: On-premises Exadata
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: NON_CLOUD
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: NON_CLOUD
+
+  ODA:
+    display:
+      group: On-premises
+      name: Oracle Database Appliance
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: NON_CLOUD
+    notes:
+      - "ODA-to-ODA physical migration: source and target must be Oracle Database Appliance, including ODA Base Database Service and ODA KVM."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ORACLE
+      physical_target:
+        PLATFORM_TYPE: NON_CLOUD
+
+  AWS_RDS_ORACLE:
+    display:
+      group: Amazon Web Services
+      name: Amazon RDS for Oracle
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        source: AWS_RDS_ORACLE
+    zdm:
+      logical_source:
+        SOURCEDATABASE_ENVIRONMENT_NAME: AMAZON
+        SOURCEDATABASE_ENVIRONMENT_DBTYPE: RDS_ORACLE
+
+  OCI_BASEDB:
+    display:
+      group: Oracle Cloud Infrastructure
+      name: OCI BaseDB
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: VMDB
+    notes:
+      - "Physical target must run Linux x86-64 and allow required ZDM host access."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ORACLE
+      physical_target:
+        PLATFORM_TYPE: VMDB
+
+  OCI_EXADB_D:
+    display:
+      group: Oracle Cloud Infrastructure
+      name: OCI ExaDB-D
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  OCI_EXADB_XS:
+    display:
+      group: Oracle Cloud Infrastructure
+      name: OCI ExaDB-XS
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical migration to ExaDB-XS is limited to Oracle AI Database 26ai targets."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  OCI_ADB_S:
+    display:
+      group: Oracle Cloud Infrastructure
+      name: OCI ADB-S
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBS
+
+  OCI_ADB_D:
+    display:
+      group: Oracle Cloud Infrastructure
+      name: OCI ADB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBD
+
+  EXADB_CC:
+    display:
+      group: Oracle Cloud@Customer
+      name: ExaDB-C@C
+    supports:
+      source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        source: ORACLE
+        target: CO_MANAGED
+      physical:
+        target: EXACC
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACC
+
+  EXADB_CC_ADB_D:
+    display:
+      group: Oracle Cloud@Customer
+      name: ExaDB-C@C ADB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBCC
+
+  ORACLEDB_AZURE_EXADB_D:
+    display:
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ExaDB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical online for ExaDB-D uses direct data transfer; validate network path and host access."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  ORACLEDB_AZURE_EXADB_XS:
+    display:
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ExaDB-XS
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical migration to ExaDB-XS is limited to Oracle AI Database 26ai targets."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  ORACLEDB_AZURE_BASEDB:
+    display:
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - BaseDB
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: VMDB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ORACLE
+      physical_target:
+        PLATFORM_TYPE: VMDB
+
+  ORACLEDB_AZURE_ADB_S:
+    display:
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ADB-S
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBS
+
+  ORACLEDB_AZURE_ADB_D:
+    display:
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ADB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBD
+
+  ORACLEDB_GCP_EXADB_D:
+    display:
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ExaDB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical online for ExaDB-D uses direct data transfer; validate network path and host access."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  ORACLEDB_GCP_EXADB_XS:
+    display:
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ExaDB-XS
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical migration to ExaDB-XS is limited to Oracle AI Database 26ai targets."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  ORACLEDB_GCP_BASEDB:
+    display:
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - BaseDB
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: VMDB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ORACLE
+      physical_target:
+        PLATFORM_TYPE: VMDB
+
+  ORACLEDB_GCP_ADB_S:
+    display:
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ADB-S
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBS
+
+  ORACLEDB_AWS_EXADB_D:
+    display:
+      group: Oracle Database@AWS
+      name: Oracle Database@AWS - ExaDB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
+    rule_groups:
+      logical:
+        target: CO_MANAGED
+      physical:
+        target: EXACS
+    notes:
+      - "Physical online for ExaDB-D uses direct data transfer; validate network path and host access."
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: EXADATA
+      physical_target:
+        PLATFORM_TYPE: EXACS
+
+  ORACLEDB_AWS_ADB_D:
+    display:
+      group: Oracle Database@AWS
+      name: Oracle Database@AWS - ADB-D
+    supports:
+      target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
+    rule_groups:
+      logical:
+        target: ADB
+    zdm:
+      logical_target:
+        TARGETDATABASE_DBTYPE: ADBD

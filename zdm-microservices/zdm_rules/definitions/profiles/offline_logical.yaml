@@ -1,0 +1,485 @@
+method: OFFLINE_LOGICAL
+migration_type: Logical
+
+decision_inputs:
+  controls:
+    source_group:
+      label: Logical source group
+      from_rule_group: logical.source
+      options: [ORACLE, AWS_RDS_ORACLE]
+      labels:
+        ORACLE: Oracle Database
+        AWS_RDS_ORACLE: AWS RDS Oracle
+      default: ORACLE
+    target_group:
+      label: Logical target group
+      from_rule_group: logical.target
+      options: [ADB, CO_MANAGED, USER_MANAGED]
+      labels:
+        ADB: Autonomous Database target
+        CO_MANAGED: Co-managed Oracle Database target
+        USER_MANAGED: User-managed Oracle Database target
+      default: ADB
+
+response_file:
+  default_medium: OSS
+
+  ui:
+    medium_fields_title: Transfer settings
+    section_labels:
+      source_database: Source database
+      target_database: Target database
+      transfer_settings: Transfer settings
+      oci_authentication: OCI authentication
+      data_pump: Data Pump settings
+      tablespace: Tablespace remap
+      remaps: Metadata remaps
+      schemas: Schemas
+    layout:
+      - type: tabs
+        title: Source & Target
+        tabs: [source_database, target_database]
+      - type: medium
+      - type: sections
+        title: Data Pump settings
+        sections:
+          - data_pump
+          - title: Schemas and remaps
+            sections: [tablespace, remaps]
+          - schemas
+      - type: additional_parameters
+        title: Additional parameters (key/value)
+
+  validation:
+    defaults:
+      MIGRATION_METHOD:
+        value: OFFLINE_LOGICAL
+      DATA_TRANSFER_MEDIUM:
+        value: OSS
+      SOURCEDATABASE_CONNECTIONDETAILS_PORT:
+        value: 1521
+      SOURCEDATABASE_ADMINUSERNAME:
+        value: system
+      TARGETDATABASE_ADMINUSERNAME:
+        value: admin
+      DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME:
+        value: DATA_PUMP_DIR
+        when:
+          not:
+            field_equals:
+              DATA_TRANSFER_MEDIUM: DBLINK
+      DATAPUMPSETTINGS_JOBMODE:
+        value: SCHEMA
+        write: false
+
+    required:
+      - key: SOURCEDATABASE_CONNECTIONDETAILS_HOST
+      - key: SOURCEDATABASE_CONNECTIONDETAILS_PORT
+      - key: SOURCEDATABASE_CONNECTIONDETAILS_SERVICENAME
+      - key: SOURCEDATABASE_ADMINUSERNAME
+      - key: WALLET_SOURCECONTAINER
+      - one_of:
+          - TARGETDATABASE_OCID
+          - TARGETDATABASE_DBTYPE
+      - key: TARGETDATABASE_CONNECTIONDETAILS_SERVICENAME
+      - key: TARGETDATABASE_ADMINUSERNAME
+      - key: WALLET_TARGETADMIN
+      - key: DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME
+        when:
+          not:
+            field_equals:
+              DATA_TRANSFER_MEDIUM: DBLINK
+      - key: DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH
+        when:
+          not:
+            field_equals:
+              DATA_TRANSFER_MEDIUM: DBLINK
+      - key: DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: OCIAUTHENTICATIONDETAILS_REGIONID
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_TENANTID
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_USERID
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_FINGERPRINT
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_PRIVATEKEYFILE
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: OSS
+      - key: DUMPTRANSFERDETAILS_SHAREDSTORAGE_NAME
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: NFS
+      - key: DUMPTRANSFERDETAILS_SHAREDSTORAGE_HOST
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: NFS
+      - key: DUMPTRANSFERDETAILS_SHAREDSTORAGE_PATH
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: NFS
+      - key: SOURCEDATABASE_ENVIRONMENT_NAME
+        expected_value: AMAZON
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+      - key: SOURCEDATABASE_ENVIRONMENT_DBTYPE
+        expected_value: RDS_ORACLE
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+      - key: DUMPTRANSFERDETAILS_S3BUCKET_NAME
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+      - key: DUMPTRANSFERDETAILS_S3BUCKET_REGION
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+      - key: DUMPTRANSFERDETAILS_S3BUCKET_ACCESSKEY
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+      - key: WALLET_AMAZONS3SECRET
+        when:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: AMAZON3
+
+  derived_fields:
+    - SOURCEDATABASE_ENVIRONMENT_NAME
+    - SOURCEDATABASE_ENVIRONMENT_DBTYPE
+
+  fields:
+    SOURCEDATABASE_CONNECTIONDETAILS_HOST:
+      label: Source host
+    SOURCEDATABASE_CONNECTIONDETAILS_PORT:
+      label: Source port
+      control: number
+      default: 1521
+      min_value: 1
+      max_value: 65535
+      step: 1
+    SOURCEDATABASE_CONNECTIONDETAILS_SERVICENAME:
+      label: Source service name
+    SOURCEDATABASE_ADMINUSERNAME:
+      label: Source admin username
+      default: system
+    WALLET_SOURCECONTAINER:
+      label: Source wallet
+      control: wallet
+    TARGETDATABASE_DBTYPE:
+      label: Target DB type
+      control: select
+      options: [ORACLE, ADBD, ADBS, ADBCC, EXADATA]
+    TARGETDATABASE_OCID:
+      label: Target ADB OCID
+    TARGETDATABASE_CONNECTIONDETAILS_SERVICENAME:
+      label: Target service name
+    TARGETDATABASE_ADMINUSERNAME:
+      label: Target admin username
+      default: admin
+    WALLET_TARGETADMIN:
+      label: Target admin wallet
+      control: wallet
+    DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME:
+      label: Namespace
+    DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME:
+      label: Bucket name
+    OCIAUTHENTICATIONDETAILS_REGIONID:
+      label: Region
+    OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_TENANTID:
+      label: Tenant OCID
+    OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_USERID:
+      label: User OCID
+    OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_FINGERPRINT:
+      label: API key fingerprint
+    OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_PRIVATEKEYFILE:
+      label: Private key file path
+    DATAPUMPSETTINGS_DATABASELINKDETAILS_NAME:
+      label: Database link name
+    DATAPUMPSETTINGS_DATABASELINKDETAILS_WALLETBUCKET_NAMESPACENAME:
+      label: Wallet bucket namespace
+    DATAPUMPSETTINGS_DATABASELINKDETAILS_WALLETBUCKET_BUCKETNAME:
+      label: Wallet bucket name
+    DUMPTRANSFERDETAILS_SHAREDSTORAGE_NAME:
+      label: Shared storage name
+    DUMPTRANSFERDETAILS_SHAREDSTORAGE_HOST:
+      label: Shared storage host
+    DUMPTRANSFERDETAILS_SHAREDSTORAGE_PATH:
+      label: Shared storage path
+    DUMPTRANSFERDETAILS_SHAREDSTORAGE_DETACHFSSPOST:
+      label: Detach FSS after migration
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "TRUE"
+    DUMPTRANSFERDETAILS_PUBLICREAD:
+      label: Public read
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "FALSE"
+    DUMPTRANSFERDETAILS_TRANSFERTARGET_HOST:
+      label: Transfer target host
+    DUMPTRANSFERDETAILS_TRANSFERTARGET_USER:
+      label: Transfer target user
+    DUMPTRANSFERDETAILS_TRANSFERTARGET_USERKEY:
+      label: Transfer target SSH key
+    DUMPTRANSFERDETAILS_TRANSFERTARGET_DUMPDIRPATH:
+      label: Transfer target dump directory
+    DUMPTRANSFERDETAILS_S3BUCKET_NAME:
+      label: S3 bucket name
+    DUMPTRANSFERDETAILS_S3BUCKET_REGION:
+      label: S3 bucket region
+    DUMPTRANSFERDETAILS_S3BUCKET_ACCESSKEY:
+      label: S3 access key
+    WALLET_AMAZONS3SECRET:
+      label: S3 secret wallet alias
+      control: wallet
+    DATAPUMPSETTINGS_JOBMODE:
+      label: Job mode
+      control: select
+      options: [SCHEMA, TABLE, FULL, TRANSPORTABLE]
+    DATAPUMPSETTINGS_METADATAFIRST:
+      label: Metadata first
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "FALSE"
+    DATAPUMPSETTINGS_DELETEDUMPSINOSS:
+      label: Delete dumps after success
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "FALSE"
+      show_when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: OSS
+    DATAPUMPSETTINGS_FIXINVALIDOBJECTS:
+      label: Fix invalid objects
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "TRUE"
+    DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME:
+      label: Export directory object
+      default: DATA_PUMP_DIR
+      show_when:
+        not:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: DBLINK
+    DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH:
+      label: Export directory path
+      show_when:
+        not:
+          field_equals:
+            DATA_TRANSFER_MEDIUM: DBLINK
+    TABLESPACEDETAILS_AUTOREMAP:
+      label: Auto remap
+      control: select
+      options: ["TRUE", "FALSE"]
+      default: "TRUE"
+    DATAPUMPSETTINGS_METADATAREMAPS:
+      label: Metadata remaps
+      control: metadata_remaps
+    INCLUDEOBJECTS:
+      label: Schemas to include
+      control: include_schemas
+
+  sections:
+    source_database:
+      - SOURCEDATABASE_CONNECTIONDETAILS_HOST
+      - SOURCEDATABASE_CONNECTIONDETAILS_PORT
+      - SOURCEDATABASE_CONNECTIONDETAILS_SERVICENAME
+      - SOURCEDATABASE_ADMINUSERNAME
+      - WALLET_SOURCECONTAINER
+    target_database:
+      - TARGETDATABASE_DBTYPE
+      - TARGETDATABASE_OCID
+      - TARGETDATABASE_CONNECTIONDETAILS_SERVICENAME
+      - TARGETDATABASE_ADMINUSERNAME
+      - WALLET_TARGETADMIN
+    data_pump:
+      - DATAPUMPSETTINGS_JOBMODE
+      - DATAPUMPSETTINGS_METADATAFIRST
+      - DATAPUMPSETTINGS_DELETEDUMPSINOSS
+      - DATAPUMPSETTINGS_FIXINVALIDOBJECTS
+      - DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_NAME
+      - DATAPUMPSETTINGS_EXPORTDIRECTORYOBJECT_PATH
+    tablespace:
+      - TABLESPACEDETAILS_AUTOREMAP
+    remaps:
+      - DATAPUMPSETTINGS_METADATAREMAPS
+    schemas:
+      - INCLUDEOBJECTS
+
+  additional_parameters:
+    default_rows:
+      - key: RUNCPATREMOTELY
+        value: "TRUE"
+
+  media:
+    OSS:
+      label: OCI Object Storage
+      hint: Default choice for most OCI logical migrations.
+      fields:
+        - DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME
+        - DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME
+        - OCIAUTHENTICATIONDETAILS_REGIONID
+        - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_TENANTID
+        - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_USERID
+        - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_FINGERPRINT
+        - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_PRIVATEKEYFILE
+      sections:
+        transfer_settings:
+          - DATAPUMPSETTINGS_DATABUCKET_NAMESPACENAME
+          - DATAPUMPSETTINGS_DATABUCKET_BUCKETNAME
+        oci_authentication:
+          - OCIAUTHENTICATIONDETAILS_REGIONID
+          - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_TENANTID
+          - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_USERID
+          - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_FINGERPRINT
+          - OCIAUTHENTICATIONDETAILS_USERPRINCIPAL_PRIVATEKEYFILE
+    NFS:
+      label: Shared Storage / FSS
+      hint: Use shared storage or FSS for larger Data Pump loads to co-managed or user-managed targets.
+      unavailable_hint: Requires a co-managed or user-managed target with shared storage/FSS.
+      show_when:
+        field_in:
+          target_group: [CO_MANAGED, USER_MANAGED]
+      fields:
+        - DUMPTRANSFERDETAILS_SHAREDSTORAGE_NAME
+        - DUMPTRANSFERDETAILS_SHAREDSTORAGE_HOST
+        - DUMPTRANSFERDETAILS_SHAREDSTORAGE_PATH
+      advanced_fields:
+        - DUMPTRANSFERDETAILS_SHAREDSTORAGE_DETACHFSSPOST
+        - DUMPTRANSFERDETAILS_PUBLICREAD
+    DBLINK:
+      label: Database Link
+      hint: Use when the target can connect cleanly to the source over SQL.
+      fields:
+        - DATAPUMPSETTINGS_DATABASELINKDETAILS_NAME
+      advanced_fields:
+        - DATAPUMPSETTINGS_DATABASELINKDETAILS_WALLETBUCKET_NAMESPACENAME
+        - DATAPUMPSETTINGS_DATABASELINKDETAILS_WALLETBUCKET_BUCKETNAME
+    COPY:
+      label: ZDM Copy Over SSH
+      hint: Defaults are normally enough; use additional parameters for rare COPY tuning.
+      unavailable_hint: Requires SSH access and a co-managed or user-managed target.
+      show_when:
+        field_in:
+          target_group: [CO_MANAGED, USER_MANAGED]
+      fields: []
+      advanced_fields:
+        - DUMPTRANSFERDETAILS_TRANSFERTARGET_HOST
+        - DUMPTRANSFERDETAILS_TRANSFERTARGET_USER
+        - DUMPTRANSFERDETAILS_TRANSFERTARGET_USERKEY
+        - DUMPTRANSFERDETAILS_TRANSFERTARGET_DUMPDIRPATH
+    MANUAL_COPY:
+      label: Manual Copy
+      hint: Pause after export, copy dump files manually, then resume.
+      unavailable_hint: Requires a co-managed or user-managed target.
+      show_when:
+        field_in:
+          target_group: [CO_MANAGED, USER_MANAGED]
+      fields: []
+    AMAZON3:
+      label: Amazon S3
+      hint: Use for AWS RDS Oracle sources migrating to Autonomous Database through S3.
+      unavailable_hint: Requires AWS RDS Oracle source and Autonomous Database target.
+      show_when:
+        all:
+          - field_equals:
+              source_group: AWS_RDS_ORACLE
+          - field_equals:
+              target_group: ADB
+      fields:
+        - DUMPTRANSFERDETAILS_S3BUCKET_NAME
+        - DUMPTRANSFERDETAILS_S3BUCKET_REGION
+        - DUMPTRANSFERDETAILS_S3BUCKET_ACCESSKEY
+        - WALLET_AMAZONS3SECRET
+
+job_submission:
+  fields:
+    - sourcedb
+    - sourcesid
+    - sourcenode
+    - srcauth
+    - srcarg1
+    - srcarg2
+    - srcarg3
+    - sourcesyswallet
+    - targetnode
+    - tgtauth
+    - tgtarg1
+    - tgtarg2
+    - tgtarg3
+  sections:
+    source_database:
+      - sourcedb
+      - sourcesid
+      - sourcenode
+      - srcauth
+      - srcarg1
+      - srcarg2
+      - srcarg3
+      - sourcesyswallet
+    target_database:
+      - targetnode
+      - tgtauth
+      - tgtarg1
+      - tgtarg2
+      - tgtarg3
+  run_controls:
+    advisor_mode:
+      label: Advisor mode
+      control: select
+      options: [NONE, ADVISOR, IGNORE_ADVISOR, SKIP_ADVISOR]
+      default: NONE
+    flow_control:
+      label: Flow control
+      control: select
+      options: [NONE, PAUSE_AFTER, STOP_AFTER]
+      default: NONE
+    flow_phase:
+      label: Phase (for pause/stop)
+      control: text
+      help: Required when flow control is pause/stop
+    genfixup:
+      label: Genfixup
+      control: select
+      options: ["", "YES", "NO"]
+      default: ""
+    ignore:
+      label: Ignore checks
+      control: multiselect
+      options: [ALL, WARNING, PATCH_CHECK, NLS_CHECK, NLS_NCHAR_CHECK, ENDIAN_CHECK, VAULT_CHECK, DB_NK_CACHE_SIZE_CHECK]
+    schedule:
+      label: Schedule
+      control: schedule
+      now_label: Schedule NOW
+      text_label: Schedule (ISO-8601)
+      text_help: YYYY-MM-DDTHH:MM:SS±HH
+      now_value: NOW
+    listphases:
+      label: List phases (-listphases)
+      control: checkbox
+      default: false
+    custom_args:
+      label: Custom args (one per line, full token e.g. '-myflag value')
+      control: textarea
+  run_defaults:
+    MANUAL_COPY:
+      MIGRATE:
+        pauseafter: ZDM_DATAPUMP_EXPORT_SRC

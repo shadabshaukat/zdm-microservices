@@ -1,0 +1,184 @@
+method: ONLINE_PHYSICAL
+migration_type: Physical
+default_medium: OSS
+
+platform_mediums:
+  VMDB: [OSS, DIRECT]
+  EXACS: [OSS, DIRECT]
+  EXACC: [OSS, EXTBACKUP, ZDLRA, NFS, DIRECT]
+  NON_CLOUD: [DIRECT]
+
+validation:
+  defaults:
+    PLATFORM_TYPE:
+      value: VMDB
+    ZDM_RMAN_DIRECT_METHOD:
+      value: RESTORE_FROM_SERVICE
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: DIRECT
+
+  required:
+    - key: TGT_DB_UNIQUE_NAME
+    - key: HOST
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: OSS
+    - key: OPC_CONTAINER
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: OSS
+    - key: BACKUP_PATH
+      when:
+        field_in:
+          DATA_TRANSFER_MEDIUM: [EXTBACKUP, NFS]
+    - key: SRC_ZDLRA_WALLET_LOC
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: ZDLRA
+    - key: TGT_ZDLRA_WALLET_LOC
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: ZDLRA
+    - key: ZDLRA_CRED_ALIAS
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: ZDLRA
+    - key: ZDM_RMAN_DIRECT_METHOD
+      when:
+        field_equals:
+          DATA_TRANSFER_MEDIUM: DIRECT
+
+fields:
+  PLATFORM_TYPE:
+    label: Platform type
+    control: select
+    options: [VMDB, EXACS, EXACC, NON_CLOUD]
+    default: VMDB
+  TGT_DB_UNIQUE_NAME:
+    label: Target database DB_UNIQUE_NAME
+  HOST:
+    label: Object Storage endpoint
+  OPC_CONTAINER:
+    label: Bucket / container
+  BACKUP_PATH:
+    label: Backup path
+  ZDM_USE_EXISTING_BACKUP:
+    label: Use existing RMAN backup
+    control: select
+    options: ["TRUE", "FALSE"]
+    default: "FALSE"
+  ZDM_BACKUP_TAG:
+    label: RMAN backup tag
+  SRC_ZDLRA_WALLET_LOC:
+    label: Source ZDLRA wallet path
+  TGT_ZDLRA_WALLET_LOC:
+    label: Target ZDLRA wallet path
+  ZDLRA_CRED_ALIAS:
+    label: ZDLRA credential alias
+  ZDM_RMAN_DIRECT_METHOD:
+    label: RMAN direct method
+    control: select
+    options: [RESTORE_FROM_SERVICE, ACTIVE_DUPLICATE]
+    default: RESTORE_FROM_SERVICE
+  ZDM_SRC_DB_RESTORE_SERVICE_NAME:
+    label: Source restore service
+  ZDM_USE_DG_BROKER:
+    label: Use Data Guard broker
+    control: select
+    options: ["TRUE", "FALSE"]
+    default: "FALSE"
+  ZDM_USE_EXISTING_STANDBY:
+    label: Use existing standby
+    control: select
+    options: ["TRUE", "FALSE"]
+    default: "FALSE"
+  ZDM_STANDBY_DB_CONNECT_STRING:
+    label: Standby database connect string
+  ZDM_RMAN_SECTION_SIZE:
+    label: RMAN section size
+    default: 64G
+  SRC_RMAN_CHANNELS:
+    label: Source RMAN channels
+    control: number
+    default: 10
+    min_value: 1
+    max_value: 255
+    step: 1
+  TGT_RMAN_CHANNELS:
+    label: Target RMAN channels
+    control: number
+    default: 10
+    min_value: 1
+    max_value: 255
+    step: 1
+  ZDM_SKIP_DG_CONFIG_CLEANUP:
+    label: Skip Data Guard config cleanup
+    control: select
+    options: ["TRUE", "FALSE"]
+    default: "FALSE"
+
+common_response_fields:
+  target:
+    - PLATFORM_TYPE
+    - TGT_DB_UNIQUE_NAME
+
+common_job_fields:
+  - sourcedb
+  - sourcesid
+  - sourcenode
+  - srcauth
+  - srcarg1
+  - srcarg2
+  - srcarg3
+  - sourcesyswallet
+  - targetnode
+  - tgtauth
+  - tgtarg1
+  - tgtarg2
+  - tgtarg3
+
+media:
+  OSS:
+    fields:
+      - HOST
+      - OPC_CONTAINER
+    advanced_fields:
+      - ZDM_USE_EXISTING_BACKUP
+      - ZDM_BACKUP_TAG
+  EXTBACKUP:
+    show_when:
+      field_equals:
+        PLATFORM_TYPE: EXACC
+    fields:
+      - BACKUP_PATH
+      - ZDM_USE_EXISTING_BACKUP
+      - ZDM_BACKUP_TAG
+  ZDLRA:
+    show_when:
+      field_equals:
+        PLATFORM_TYPE: EXACC
+    fields:
+      - SRC_ZDLRA_WALLET_LOC
+      - TGT_ZDLRA_WALLET_LOC
+      - ZDLRA_CRED_ALIAS
+  NFS:
+    show_when:
+      field_equals:
+        PLATFORM_TYPE: EXACC
+    fields:
+      - BACKUP_PATH
+      - ZDM_USE_EXISTING_BACKUP
+      - ZDM_BACKUP_TAG
+  DIRECT:
+    fields:
+      - ZDM_RMAN_DIRECT_METHOD
+      - ZDM_SRC_DB_RESTORE_SERVICE_NAME
+    advanced_fields:
+      - ZDM_USE_DG_BROKER
+      - ZDM_USE_EXISTING_STANDBY
+      - ZDM_STANDBY_DB_CONNECT_STRING
+      - ZDM_RMAN_SECTION_SIZE
+      - SRC_RMAN_CHANNELS
+      - TGT_RMAN_CHANNELS
+      - ZDM_SKIP_DG_CONFIG_CLEANUP
