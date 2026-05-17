@@ -34,25 +34,27 @@ try:
     from .zdm_rules.catalog import get_profile  # package-style
     from .zdm_rules.environments import (
         CONNECTION_ENVIRONMENTS,
+        db_connection_zdm_keys_for_role,
         db_connection_type_supports_role,
         normalize_connection_role,
         normalize_connection_type,
         project_environment_response_values,
-        project_logical_scenario_values,
+        project_rule_group_values,
     )
-    from .zdm_rules.jobs import build_migrate_command
+    from .zdm_rules.jobs import build_migrate_command, validate_job_run_controls
     from .zdm_rules.responsefile import build_response_file_lines
 except ImportError:
     from zdm_rules.catalog import get_profile  # script-style
     from zdm_rules.environments import (
         CONNECTION_ENVIRONMENTS,
+        db_connection_zdm_keys_for_role,
         db_connection_type_supports_role,
         normalize_connection_role,
         normalize_connection_type,
         project_environment_response_values,
-        project_logical_scenario_values,
+        project_rule_group_values,
     )
-    from zdm_rules.jobs import build_migrate_command
+    from zdm_rules.jobs import build_migrate_command, validate_job_run_controls
     from zdm_rules.responsefile import build_response_file_lines
 
 app = FastAPI()
@@ -169,13 +171,6 @@ class LogFileReadParams(StrictRequestModel):
 # -----------------------------
 _SAFE_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_LOGICAL_SOURCE_ENV_KEYS = {
-    "SOURCEDATABASE_ENVIRONMENT_NAME",
-    "SOURCEDATABASE_ENVIRONMENT_DBTYPE",
-}
-_LOGICAL_TARGET_ENV_KEYS = {"TARGETDATABASE_DBTYPE"}
-_PHYSICAL_TARGET_ENV_KEYS = {"PLATFORM_TYPE"}
-
 class ResponseFileRequest(StrictRequestModel):
     project: str
     migration_method: str
@@ -508,12 +503,8 @@ def _reject_project_environment_conflicts(
     migration_method: str,
 ) -> None:
     method = _normalize_migration_method(migration_method)
-    controlled_by_source = _LOGICAL_SOURCE_ENV_KEYS if method.endswith("_LOGICAL") else set()
-    controlled_by_target = set()
-    if method.endswith("_LOGICAL"):
-        controlled_by_target.update(_LOGICAL_TARGET_ENV_KEYS)
-    elif method.endswith("_PHYSICAL"):
-        controlled_by_target.update(_PHYSICAL_TARGET_ENV_KEYS)
+    controlled_by_source = set(db_connection_zdm_keys_for_role("source", method))
+    controlled_by_target = set(db_connection_zdm_keys_for_role("target", method))
 
     for key in sorted(controlled_by_source | controlled_by_target):
         if key not in values or values.get(key) in (None, ""):
@@ -544,8 +535,13 @@ def _validate_project_medium_selection(
         return
 
     if profile.method.endswith("_LOGICAL"):
+        rule_group_refs = {
+            str(name): config.get("from_rule_group")
+            for name, config in profile.decision_input_controls.items()
+            if isinstance(config, dict) and config.get("from_rule_group")
+        }
         allowed = profile.enabled_medium_keys(
-            project_logical_scenario_values(project_record, connections)
+            project_rule_group_values(project_record, connections, rule_group_refs)
         )
     elif profile.method.endswith("_PHYSICAL"):
         environment_values = project_environment_response_values(project_record, connections, profile.method)
@@ -617,6 +613,13 @@ def _validate_job_parameter_keys(profile: Any, job_parameters: Dict[str, Any]) -
         )
 
 
+def _validate_job_run_controls_or_400(profile: Any, payload: Dict[str, Any]) -> None:
+    try:
+        validate_job_run_controls(profile, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _saved_job_name(project: str, run_type: str) -> str:
     return f"{project}_{run_type.lower()}"
 
@@ -680,10 +683,31 @@ def _validate_saved_job_api_record(record_name: str, job: Any) -> Dict[str, Any]
     return job
 
 
+def _validate_saved_job_profile_contract(record_name: str, job: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        profile = _project_profile_or_400(job.get("project"))
+        _validate_job_parameter_keys(profile, job["job_parameters"])
+        validate_job_run_controls(profile, job)
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved job '{record_name}' violates API contract: {exc.detail}",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved job '{record_name}' violates API contract: {exc}",
+        ) from exc
+    return job
+
+
 def _saved_jobs_api_response() -> Dict[str, Dict[str, Any]]:
     jobs = load_saved_jobs()
     return {
-        name: _validate_saved_job_api_record(name, job)
+        name: _validate_saved_job_profile_contract(
+            name,
+            _validate_saved_job_api_record(name, job),
+        )
         for name, job in jobs.items()
     }
 
@@ -930,6 +954,7 @@ def _copy_saved_job_from_project(source_project: str, target_project: str, migra
     ):
         raise HTTPException(status_code=404, detail="Source saved job definition not found for requested run_type")
     source_job = _validate_saved_job_api_record(source_name, source_job)
+    source_job = _validate_saved_job_profile_contract(source_name, source_job)
 
     target_rsp_value = target_record.get("rsp")
     target_rsp = target_rsp_value.strip() if isinstance(target_rsp_value, str) and target_rsp_value.strip() else f"{target_project}.rsp"
@@ -947,6 +972,7 @@ def _copy_saved_job_from_project(source_project: str, target_project: str, migra
     target_profile = _project_profile_or_400(target_project)
     copied_job["job_parameters"] = _compact_job_parameters(copied_job.get("job_parameters"))
     _validate_job_parameter_keys(target_profile, copied_job["job_parameters"])
+    _validate_job_run_controls_or_400(target_profile, copied_job)
 
     jobs[target_name] = copied_job
     save_saved_jobs(jobs)
@@ -2153,6 +2179,7 @@ def upsert_saved_job(params: SavedJobParams, username: str = Depends(verify_cred
     payload["project"] = project
     payload["job_parameters"] = _compact_job_parameters(payload.get("job_parameters"))
     _validate_job_parameter_keys(profile, payload["job_parameters"])
+    _validate_job_run_controls_or_400(profile, payload)
     jobs[expected_name] = payload
     save_saved_jobs(jobs)
     return {"status": "success", "message": f"Job '{expected_name}' saved", "job": payload}
@@ -2627,6 +2654,28 @@ def list_credential_wallets(username: str = Depends(verify_credentials)):
         path = os.path.join(base_dir, name)
         if os.path.isdir(path):
             wallets.append({"name": name, "path": path, "credential_username": _credential_wallet_username(path)})
+    return {"wallets": wallets}
+
+
+@app.get("/credential-wallets/names")
+def list_credential_wallet_names(username: str = Depends(verify_credentials)):
+    base_dir = get_cred_wallets_dir()
+    wallets = []
+    for name in sorted(os.listdir(base_dir)):
+        path = os.path.join(base_dir, name)
+        if os.path.isdir(path):
+            wallets.append({"name": name})
+    return {"wallets": wallets}
+
+
+@app.get("/credential-wallets/paths")
+def list_credential_wallet_paths(username: str = Depends(verify_credentials)):
+    base_dir = get_cred_wallets_dir()
+    wallets = []
+    for name in sorted(os.listdir(base_dir)):
+        path = os.path.join(base_dir, name)
+        if os.path.isdir(path):
+            wallets.append({"name": name, "path": path})
     return {"wallets": wallets}
 
 

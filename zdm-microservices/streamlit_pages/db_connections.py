@@ -30,7 +30,8 @@ from streamlit_shared.db_types import (
     db_connection_type_options_for_role,
     is_adb_database_type,
 )
-from streamlit_shared.wallet_payload import validate_credential_wallet_rows
+from streamlit_shared.ui import render_diagnostics
+from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -60,7 +61,7 @@ def render(ctx: AppContext) -> None:
         )
         db_type_options = db_connection_type_options_for_role(connection_role)
         db_type = st.selectbox(
-            "Connection type",
+            "DB Platform",
             db_type_options,
             format_func=db_connection_type_label,
             index=0,
@@ -146,7 +147,7 @@ def render(ctx: AppContext) -> None:
                         if upload_resp:
                             validate_payload_or_stop(upload_resp, validate_tls_wallet_upload_response)
                             st.success("TLS wallet uploaded.")
-                    st.json(validated)
+                    render_diagnostics(validated)
                     st.session_state["last_saved_conn"] = name
 
 
@@ -247,13 +248,14 @@ def render(ctx: AppContext) -> None:
         wallet_rows = []
         if auth_method == "credential_wallet":
             wallet_rows = validate_payload_or_stop(
-                api_request_required("get", "/credential-wallets", api_base, auth),
-                validate_credential_wallet_rows,
+                api_request_required("get", "/credential-wallets/names", api_base, auth),
+                validate_credential_wallet_names_response,
             )
         auth_payload = render_db_auth_inputs_for_method(
             key_prefix="conn_test",
             method=auth_method,
             wallet_rows=wallet_rows,
+            show_credential_user=False,
         )
         test_clicked = st.button("Test", type="primary")
 
@@ -278,7 +280,7 @@ def render(ctx: AppContext) -> None:
                 if data:
                     validated = validate_payload_or_stop(data, validate_dbconnection_test_response)
                     st.success(validated["message"])
-                    st.json(validated)
+                    render_diagnostics(validated)
 
 
     # -----------------------------

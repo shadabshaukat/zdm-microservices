@@ -6,10 +6,9 @@ from typing import Any, Dict, List, Mapping
 import pandas as pd
 import streamlit as st
 
-from streamlit_shared.api_client import api_request
+from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.response_file_form import (
     FieldSpec,
-    LogicalScenario,
     MIGRATION_TYPE_OPTIONS,
     REMAP_TYPE_OPTIONS,
     SELECT_PROJECT,
@@ -18,19 +17,22 @@ from streamlit_shared.response_file_form import (
     collect_metadata_remaps,
     default_method,
     include_schemas_from_text,
-    logical_medium_guidance,
-    logical_medium_options,
-    logical_scenario_from_project,
-    logical_scenario_option_label,
-    medium_options,
+    migration_medium_guidance,
+    migration_medium_options,
+    migration_decision_input_summary_parts,
+    migration_decision_input_values_from_project,
+    migration_method_label,
     method_options,
     normalize_method,
-    normalize_logical_scenario,
     project_environment_response_values,
     profile_additional_default_rows,
-    profile_medium_field_specs,
+    profile_medium_fields_title,
     profile_medium_section_field_specs,
+    profile_medium_section_names,
+    profile_medium_unsectioned_field_specs,
+    profile_response_layout,
     profile_section_field_specs,
+    profile_section_label,
     response_method_supported,
     same_method_copy_candidates,
 )
@@ -43,11 +45,10 @@ class ResponseFileSelection:
     migration_type: str
     migration_method: str
     selected_migration_method: str
-    logical_scenario: LogicalScenario | None
+    decision_input_values: Dict[str, Any]
     platform_type: str
     derived_response_values: Dict[str, Any]
     medium: str
-    is_oss: bool
     response_method_supported: bool
 
 
@@ -56,6 +57,17 @@ class ResponseFileFormData:
     values: Dict[str, Any]
     remaps: List[List[str]]
     additional: Dict[str, str]
+
+
+@dataclass(frozen=True)
+class RenderedFields:
+    values: Dict[str, Any]
+    remaps: List[List[str]]
+
+
+def responsefile_unavailable_message(selected_migration_method: str) -> str:
+    method_label = migration_method_label(selected_migration_method)
+    return f"ZEUS currently supports Logical Offline response files only. This project uses {method_label}."
 
 
 def render_responsefile_project_controls(project: str) -> bool:
@@ -95,20 +107,10 @@ def render_responsefile_basics(
     if not method_opts:
         st.error(f"No active migration profile is available for {migration_type}.")
         st.stop()
-    platform_type = ""
-    logical_scenario: LogicalScenario | None = None
     project_record = projects_resp.get(project)
     if not isinstance(project_record, dict):
-        st.error(f"GET /projects API contract error: selected project '{project}' is missing.")
+        st.error(f"Selected project '{project}' is no longer available. Refresh the page and choose a project again.")
         st.stop()
-
-    if migration_type == "Logical":
-        logical_scenario = logical_scenario_from_project(
-            project_record,
-            connections_resp,
-            default_method_value,
-        )
-        _render_logical_scenario_summary(logical_scenario)
 
     if st.session_state.get("rf_migration_method") not in method_opts:
         st.session_state["rf_migration_method"] = default_method_value
@@ -123,7 +125,14 @@ def render_responsefile_basics(
     selected_migration_method = normalize_method(migration_method)
     supported = response_method_supported(selected_migration_method)
     if not supported:
-        st.error(f"{selected_migration_method} is not supported in this refactor yet.")
+        st.error(responsefile_unavailable_message(selected_migration_method))
+
+    decision_input_values = migration_decision_input_values_from_project(
+        selected_migration_method,
+        project_record,
+        connections_resp,
+    )
+    _render_decision_input_summary(selected_migration_method, decision_input_values)
 
     derived_response_values = project_environment_response_values(
         project_record,
@@ -132,28 +141,20 @@ def render_responsefile_basics(
     )
     platform_type = str(derived_response_values.get("PLATFORM_TYPE") or "")
 
-    if logical_scenario is not None:
-        logical_scenario = normalize_logical_scenario(
-            LogicalScenario(
-                migration_method=selected_migration_method,
-                source_type=logical_scenario.source_type,
-                target_type=logical_scenario.target_type,
-            )
-        )
-
     _render_copy_values(project, projects_resp, selected_migration_method, api_base, auth)
 
-    medium_opts = medium_options(
-        migration_type,
+    medium_context = {**decision_input_values, **derived_response_values}
+    if platform_type:
+        medium_context["PLATFORM_TYPE"] = platform_type
+    medium_option_rows = migration_medium_options(
         selected_migration_method,
-        platform_type,
-        logical_scenario=logical_scenario,
+        medium_context,
     )
-    medium_labels = (
-        {option.value: option.label for option in logical_medium_options(logical_scenario)}
-        if migration_type == "Logical"
-        else {}
-    )
+    medium_opts = [option.value for option in medium_option_rows if option.enabled]
+    medium_labels = {option.value: option.label for option in medium_option_rows}
+    if not medium_opts:
+        st.error("No data transfer media are available for this project and migration method.")
+        st.stop()
     if st.session_state.get("rf_medium") not in medium_opts:
         st.session_state["rf_medium"] = medium_opts[0]
 
@@ -164,42 +165,40 @@ def render_responsefile_basics(
         help=param_help("DATA_TRANSFER_MEDIUM"),
         format_func=lambda value: medium_labels.get(value, value),
     )
-    if migration_type == "Logical":
-        _render_logical_medium_notes(logical_scenario, medium)
+    _render_medium_notes(selected_migration_method, medium, medium_option_rows)
 
     return ResponseFileSelection(
         migration_type=migration_type,
         migration_method=migration_method,
         selected_migration_method=selected_migration_method,
-        logical_scenario=logical_scenario,
+        decision_input_values=decision_input_values,
         platform_type=platform_type,
         derived_response_values=derived_response_values,
         medium=medium,
-        is_oss=normalize_method(medium) == "OSS",
         response_method_supported=supported,
     )
 
 
-def _render_logical_scenario_summary(logical_scenario: LogicalScenario) -> None:
-    st.caption(
-        "Scenario: "
-        + logical_scenario_option_label("source_type", logical_scenario.source_type)
-        + " to "
-        + logical_scenario_option_label("target_type", logical_scenario.target_type)
-    )
+def _render_decision_input_summary(migration_method: str, decision_input_values: Mapping[str, Any]) -> None:
+    parts = migration_decision_input_summary_parts(migration_method, decision_input_values)
+    if not parts:
+        return
+    separator = " to " if len(parts) == 2 else " / "
+    st.caption("Migration path: " + separator.join(parts))
 
 
-def _render_logical_medium_notes(
-    logical_scenario: LogicalScenario | None,
+def _render_medium_notes(
+    migration_method: str,
     selected_medium: str,
+    medium_option_rows: List[Any],
 ) -> None:
-    guidance = logical_medium_guidance(selected_medium)
+    guidance = migration_medium_guidance(migration_method, selected_medium)
     if guidance:
         st.caption(guidance)
 
     disabled_options = [
         option
-        for option in logical_medium_options(logical_scenario)
+        for option in medium_option_rows
         if not option.enabled and option.disabled_reason
     ]
     if disabled_options:
@@ -216,22 +215,23 @@ def render_responsefile_form_sections(
     expand_all: bool,
 ) -> ResponseFileFormData:
     values: Dict[str, Any] = {}
+    remaps: List[List[str]] = []
+    additional: Dict[str, str] = {}
     if selection.platform_type:
         values["PLATFORM_TYPE"] = selection.platform_type
     values.update(selection.derived_response_values)
-    if selection.logical_scenario:
-        values["source_type"] = selection.logical_scenario.source_type
-        values["target_type"] = selection.logical_scenario.target_type
+    values.update(selection.decision_input_values)
 
-    st.divider()
-    values.update(_render_source_target_section(selection, wallet_names, wallet_map, expand_all))
+    for item in profile_response_layout(selection.selected_migration_method):
+        st.divider()
+        item_type = str(item.get("type") or "")
+        if item_type == "additional_parameters":
+            additional = _render_additional_parameters(selection, item, expand_all)
+            continue
+        rendered = _render_layout_item(selection, item, wallet_names, wallet_map, expand_all)
+        values.update(rendered.values)
+        remaps.extend(rendered.remaps)
 
-    st.divider()
-    values.update(_render_transfer_settings_section(selection, expand_all))
-    values.update(_render_oci_authentication_section(selection, expand_all))
-
-    data_pump_values, remaps, additional = _render_data_pump_sections(selection, expand_all)
-    values.update(data_pump_values)
     values = preserve_derived_response_values(values, selection.derived_response_values)
 
     return ResponseFileFormData(values=values, remaps=remaps, additional=additional)
@@ -283,159 +283,185 @@ def _render_copy_values(
         },
     )
     if copy_resp is not None:
-        try:
-            validate_responsefile_copy_response(
-                copy_resp,
-                expected_source_project=copy_source_project,
-                expected_target_project=project,
-                expected_method=selected_migration_method,
-            )
-        except ValueError as exc:
-            st.error(str(exc))
-            st.stop()
+        validate_payload_or_stop(
+            copy_resp,
+            validate_responsefile_copy_response,
+            expected_source_project=copy_source_project,
+            expected_target_project=project,
+            expected_method=selected_migration_method,
+        )
         st.session_state.pop("rf_remap_table", None)
         st.session_state.pop("rf_additional_table", None)
         st.session_state["rf_form_loaded_project"] = ""
         st.rerun()
 
 
-def _render_source_target_section(
+def _render_layout_item(
+    selection: ResponseFileSelection,
+    item: Mapping[str, Any],
+    wallet_names: List[str],
+    wallet_map: Mapping[str, str],
+    expand_all: bool,
+) -> RenderedFields:
+    item_type = str(item.get("type") or "")
+    if item_type == "tabs":
+        return _render_tab_layout(selection, item, wallet_names, wallet_map, expand_all)
+    if item_type == "medium":
+        return _render_medium_layout(selection, wallet_names, wallet_map, expand_all)
+    if item_type == "sections":
+        return _render_sections_layout(selection, item, wallet_names, wallet_map, expand_all)
+    if item_type == "section":
+        section = str(item.get("section") or "")
+        title = str(item.get("title") or _section_label(selection, section))
+        with st.expander(title, expanded=expand_all):
+            return _render_section(selection, section, wallet_names, wallet_map)
+    raise ValueError(f"Unsupported response-file layout item type: {item_type}")
+
+
+def _render_tab_layout(
+    selection: ResponseFileSelection,
+    item: Mapping[str, Any],
+    wallet_names: List[str],
+    wallet_map: Mapping[str, str],
+    expand_all: bool,
+) -> RenderedFields:
+    values: Dict[str, Any] = {}
+    remaps: List[List[str]] = []
+    tab_sections = [str(section) for section in item.get("tabs") or []]
+    with st.expander(str(item.get("title") or ""), expanded=expand_all):
+        tabs = st.tabs([_section_label(selection, section) for section in tab_sections])
+        for tab, section in zip(tabs, tab_sections):
+            with tab:
+                rendered = _render_section(selection, section, wallet_names, wallet_map)
+                values.update(rendered.values)
+                remaps.extend(rendered.remaps)
+    return RenderedFields(values=values, remaps=remaps)
+
+
+def _render_sections_layout(
+    selection: ResponseFileSelection,
+    item: Mapping[str, Any],
+    wallet_names: List[str],
+    wallet_map: Mapping[str, str],
+    expand_all: bool,
+) -> RenderedFields:
+    with st.expander(str(item.get("title") or ""), expanded=expand_all):
+        return _render_section_entries(
+            selection,
+            item.get("sections") or [],
+            wallet_names,
+            wallet_map,
+            expand_all,
+            first_inline=True,
+        )
+
+
+def _render_section_entries(
+    selection: ResponseFileSelection,
+    entries: Any,
+    wallet_names: List[str],
+    wallet_map: Mapping[str, str],
+    expand_all: bool,
+    *,
+    first_inline: bool = False,
+) -> RenderedFields:
+    values: Dict[str, Any] = {}
+    remaps: List[List[str]] = []
+    for index, entry in enumerate(entries or []):
+        if isinstance(entry, str):
+            if first_inline and index == 0:
+                rendered = _render_section(selection, entry, wallet_names, wallet_map)
+            else:
+                with st.expander(_section_label(selection, entry), expanded=expand_all):
+                    rendered = _render_section(selection, entry, wallet_names, wallet_map)
+        elif isinstance(entry, Mapping):
+            with st.expander(str(entry.get("title") or ""), expanded=expand_all):
+                rendered = _render_section_entries(
+                    selection,
+                    entry.get("sections") or [],
+                    wallet_names,
+                    wallet_map,
+                    expand_all,
+                    first_inline=True,
+                )
+        else:
+            raise ValueError(f"Unsupported response-file layout entry: {entry!r}")
+        values.update(rendered.values)
+        remaps.extend(rendered.remaps)
+    return RenderedFields(values=values, remaps=remaps)
+
+
+def _render_medium_layout(
     selection: ResponseFileSelection,
     wallet_names: List[str],
     wallet_map: Mapping[str, str],
     expand_all: bool,
-) -> Dict[str, Any]:
+) -> RenderedFields:
     values: Dict[str, Any] = {}
+    remaps: List[List[str]] = []
+    section_names = profile_medium_section_names(
+        selection.selected_migration_method,
+        selection.medium,
+    )
 
-    with st.expander("Source & Target ", expanded=expand_all):
-        if selection.migration_type == "Logical":
-            source_specs = _section_specs(selection, "source_database")
-            target_specs = _section_specs(selection, "target_database")
-            tab_src, tab_tgt = st.tabs(["Source database", "Target database"])
-            with tab_src:
-                values.update(
-                    _render_fields(
-                        editable_field_specs(
-                            source_specs,
-                            selection.derived_response_values,
-                        ),
-                        wallet_names,
-                        wallet_map,
-                    )
-                )
-                _render_derived_fields(
-                    source_specs,
-                    selection.derived_response_values,
-                )
+    for section in section_names:
+        with st.expander(_section_label(selection, section), expanded=expand_all):
+            rendered = _render_fields(
+                _medium_section_specs(selection, section),
+                selection,
+                wallet_names,
+                wallet_map,
+            )
+            values.update(rendered.values)
+            remaps.extend(rendered.remaps)
 
-            with tab_tgt:
-                values.update(
-                    _render_fields(
-                        editable_field_specs(
-                            target_specs,
-                            selection.derived_response_values,
-                        ),
-                        wallet_names,
-                        wallet_map,
-                    )
-                )
-                _render_derived_fields(
-                    target_specs,
-                    selection.derived_response_values,
-                )
+    unsectioned_specs = _medium_unsectioned_specs(selection)
+    if unsectioned_specs:
+        with st.expander(
+            profile_medium_fields_title(selection.selected_migration_method),
+            expanded=expand_all,
+        ):
+            st.markdown(f"**{selection.medium} transfer**")
+            rendered = _render_fields(unsectioned_specs, selection, wallet_names, wallet_map)
+            values.update(rendered.values)
+            remaps.extend(rendered.remaps)
+    elif not section_names:
+        with st.expander(
+            profile_medium_fields_title(selection.selected_migration_method),
+            expanded=expand_all,
+        ):
+            st.caption("No response-file fields are required for this transfer medium.")
 
-        else:
-            st.caption("This migration type is not active in the response-file profile catalog.")
-
-    return values
+    return RenderedFields(values=values, remaps=remaps)
 
 
-def _render_transfer_settings_section(
+def _render_section(
     selection: ResponseFileSelection,
-    expand_all: bool,
-) -> Dict[str, Any]:
-    values: Dict[str, Any] = {}
-
-    with st.expander("Transfer settings", expanded=expand_all):
-        if selection.is_oss and selection.migration_type == "Logical":
-            st.markdown("**Object Storage (Logical)**")
-            values.update(_render_fields(_medium_section_specs(selection, "transfer_settings")))
-        elif selection.migration_type == "Logical":
-            medium_specs = _medium_specs(selection)
-            if medium_specs:
-                st.markdown(f"**{selection.medium} transfer**")
-                values.update(_render_fields(medium_specs))
-            else:
-                st.caption("No automated transfer fields for current logical medium.")
-        else:
-            st.caption("No Object Storage fields for current selection.")
-
-    return values
+    section: str,
+    wallet_names: List[str],
+    wallet_map: Mapping[str, str],
+) -> RenderedFields:
+    specs = _section_specs(selection, section)
+    rendered = _render_fields(
+        editable_field_specs(specs, selection.derived_response_values),
+        selection,
+        wallet_names,
+        wallet_map,
+    )
+    _render_derived_fields(specs, selection.derived_response_values)
+    return rendered
 
 
-def _render_oci_authentication_section(
+def _render_additional_parameters(
     selection: ResponseFileSelection,
+    item: Mapping[str, Any],
     expand_all: bool,
-) -> Dict[str, Any]:
-    if not (selection.is_oss and selection.migration_type == "Logical"):
-        return {}
-
-    with st.expander("OCI authentication", expanded=expand_all):
-        return _render_fields(_medium_section_specs(selection, "oci_authentication"))
-
-
-def _render_data_pump_sections(
-    selection: ResponseFileSelection,
-    expand_all: bool,
-) -> tuple[Dict[str, Any], List[List[str]], Dict[str, str]]:
-    values: Dict[str, Any] = {"include_schemas": []}
-
-    remap_rows = pd.DataFrame()
+) -> Dict[str, str]:
     additional_default_rows = (
         profile_additional_default_rows(selection.selected_migration_method)
         or [{"key": "", "value": ""}]
     )
-    additional_rows = pd.DataFrame(additional_default_rows)
-
-    if selection.migration_type != "Logical":
-        return values, [], {}
-
-    st.divider()
-    with st.expander("Data Pump", expanded=expand_all):
-        values.update(_render_fields(_section_specs(selection, "data_pump")))
-
-        with st.expander("Tablespace remap", expanded=expand_all):
-            values.update(_render_fields(_section_specs(selection, "tablespace")))
-            st.caption("Metadata remaps (`DATAPUMPSETTINGS_METADATAREMAPS`)")
-            remap_rows = st.data_editor(
-                _prefill_dataframe(
-                    "rf_remap_prefill",
-                    [{"type": "REMAP_TABLESPACE", "oldValue": "", "newValue": ""}],
-                ),
-                num_rows="dynamic",
-                column_config={
-                    "type": st.column_config.SelectboxColumn("Type", options=REMAP_TYPE_OPTIONS, required=True),
-                    "oldValue": st.column_config.TextColumn("Old value", required=True),
-                    "newValue": st.column_config.TextColumn("New value", required=True),
-                },
-                key="rf_remap_table",
-            )
-
-        with st.expander("Schemas", expanded=expand_all):
-            include_schemas_raw = st.text_area(
-                field_label("Schemas to include (one per line)", True),
-                height=140,
-                key="rf_include_schemas",
-                help=param_help("include_schemas"),
-            )
-            values["include_schemas"] = include_schemas_from_text(
-                include_schemas_raw,
-                selection.migration_type,
-            )
-            st.caption(f"Count: {len(values['include_schemas'])}")
-
-    st.divider()
-    with st.expander("Additional parameters (key/value)", expanded=expand_all):
+    with st.expander(str(item.get("title") or ""), expanded=expand_all):
         additional_rows = st.data_editor(
             _prefill_dataframe("rf_additional_prefill", additional_default_rows),
             num_rows="dynamic",
@@ -445,20 +471,23 @@ def _render_data_pump_sections(
             },
             key="rf_additional_table",
         )
-
-    return (
-        values,
-        collect_metadata_remaps(remap_rows, selection.migration_type),
-        collect_additional_parameters(additional_rows),
-    )
+    return collect_additional_parameters(additional_rows)
 
 
 def _section_specs(selection: ResponseFileSelection, section: str) -> tuple[FieldSpec, ...]:
-    return profile_section_field_specs(selection.selected_migration_method, section)
+    return profile_section_field_specs(
+        selection.selected_migration_method,
+        section,
+        _field_context(selection),
+    )
 
 
-def _medium_specs(selection: ResponseFileSelection) -> tuple[FieldSpec, ...]:
-    return profile_medium_field_specs(selection.selected_migration_method, selection.medium)
+def _medium_unsectioned_specs(selection: ResponseFileSelection) -> tuple[FieldSpec, ...]:
+    return profile_medium_unsectioned_field_specs(
+        selection.selected_migration_method,
+        selection.medium,
+        _field_context(selection),
+    )
 
 
 def _medium_section_specs(selection: ResponseFileSelection, section: str) -> tuple[FieldSpec, ...]:
@@ -466,7 +495,24 @@ def _medium_section_specs(selection: ResponseFileSelection, section: str) -> tup
         selection.selected_migration_method,
         selection.medium,
         section,
+        _field_context(selection),
     )
+
+
+def _section_label(selection: ResponseFileSelection, section: str) -> str:
+    return profile_section_label(selection.selected_migration_method, section)
+
+
+def _field_context(selection: ResponseFileSelection) -> Dict[str, Any]:
+    context: Dict[str, Any] = {
+        **selection.decision_input_values,
+        **selection.derived_response_values,
+        "MIGRATION_METHOD": selection.selected_migration_method,
+        "DATA_TRANSFER_MEDIUM": selection.medium,
+    }
+    if selection.platform_type:
+        context["PLATFORM_TYPE"] = selection.platform_type
+    return context
 
 
 def _prefill_dataframe(state_key: str, default_rows: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -480,13 +526,21 @@ def _prefill_dataframe(state_key: str, default_rows: List[Dict[str, Any]]) -> pd
 
 def _render_fields(
     specs: tuple[FieldSpec, ...],
+    selection: ResponseFileSelection,
     wallet_names: List[str] | None = None,
     wallet_map: Mapping[str, str] | None = None,
-) -> Dict[str, Any]:
-    return {
-        spec.key: _render_field(spec, wallet_names or [SELECT_WALLET], wallet_map or {})
-        for spec in specs
-    }
+) -> RenderedFields:
+    values: Dict[str, Any] = {}
+    remaps: List[List[str]] = []
+    for spec in specs:
+        if spec.control == "metadata_remaps":
+            remaps.extend(_render_metadata_remaps_field(spec, selection))
+            continue
+        if spec.control == "include_schemas":
+            values["include_schemas"] = _render_include_schemas_field(spec, selection)
+            continue
+        values[spec.key] = _render_field(spec, wallet_names or [SELECT_WALLET], wallet_map or {})
+    return RenderedFields(values=values, remaps=remaps)
 
 
 def editable_field_specs(
@@ -520,6 +574,42 @@ def _render_derived_fields(
         if value in (None, ""):
             continue
         st.caption(f"{spec.label}: `{value}` (from project connection)")
+
+
+def _render_metadata_remaps_field(
+    spec: FieldSpec,
+    selection: ResponseFileSelection,
+) -> List[List[str]]:
+    st.caption(f"{spec.label} (`{spec.key}`)")
+    remap_rows = st.data_editor(
+        _prefill_dataframe(
+            "rf_remap_prefill",
+            [{"type": "REMAP_TABLESPACE", "oldValue": "", "newValue": ""}],
+        ),
+        num_rows="dynamic",
+        column_config={
+            "type": st.column_config.SelectboxColumn("Type", options=REMAP_TYPE_OPTIONS, required=True),
+            "oldValue": st.column_config.TextColumn("Old value", required=True),
+            "newValue": st.column_config.TextColumn("New value", required=True),
+        },
+        key=spec.state_key,
+    )
+    return collect_metadata_remaps(remap_rows)
+
+
+def _render_include_schemas_field(
+    spec: FieldSpec,
+    selection: ResponseFileSelection,
+) -> List[str]:
+    include_schemas_raw = st.text_area(
+        field_label(f"{spec.label} (one per line)", spec.required),
+        height=140,
+        key=spec.state_key,
+        help=param_help(spec.help_key or spec.key),
+    )
+    include_schemas = include_schemas_from_text(include_schemas_raw)
+    st.caption(f"Count: {len(include_schemas)}")
+    return include_schemas
 
 
 def _render_field(

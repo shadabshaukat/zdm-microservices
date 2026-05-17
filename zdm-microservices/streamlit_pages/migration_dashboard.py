@@ -16,6 +16,7 @@ from streamlit_shared.job_data import (
 )
 from streamlit_shared.ui import (
     monitor_job_url,
+    render_diagnostics,
     st_df_safe,
 )
 
@@ -67,16 +68,15 @@ def render(ctx: AppContext) -> None:
     try:
         jobs_df_all = zdm_job_records_to_dataframe(payload.get("jobs") or [])
     except ValueError as exc:
-        st.error("Unexpected /jobs payload shape. Restart the backend, then refresh jobs from this page.")
-        st.caption(str(exc))
-        with st.expander("Raw JSON", expanded=False):
-            st.json(payload, expanded=False)
+        st.error("ZEUS received unexpected job data. Restart the backend, then refresh jobs from this page.")
+        with st.expander("Technical details", expanded=False):
+            st.code(str(exc))
+        render_diagnostics(payload)
         st.stop()
 
     if jobs_df_all.empty:
         st.info("No jobs returned.")
-        with st.expander("Raw JSON", expanded=False):
-            st.json(payload, expanded=False)
+        render_diagnostics(payload)
         st.stop()
 
     def _filter_options(df: pd.DataFrame, column: str) -> List[str]:
@@ -234,7 +234,7 @@ def render(ctx: AppContext) -> None:
             )
         st_df_safe(display_df[columns], hide_index=True, width='stretch', column_config=column_config)
 
-    tabs = st.tabs(["Overview", "Fleet Status", "Job Details", "Failures", "Raw JSON"])
+    tabs = st.tabs(["Overview", "Fleet Status", "Job Details", "Failures", "Diagnostics"])
     eval_kpis = zdm_job_kpis(jobs_df, "EVAL")
     migrate_kpis = zdm_job_kpis(jobs_df, "MIGRATE")
     fleet_status_df = pd.concat(
@@ -344,4 +344,4 @@ def render(ctx: AppContext) -> None:
         )
 
     with tabs[4]:
-        st.json(payload, expanded=False)
+        render_diagnostics(payload)

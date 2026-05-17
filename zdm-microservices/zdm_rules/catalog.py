@@ -14,6 +14,46 @@ from zdm_rules.common import normalize_rsp_value
 
 
 PROFILE_DIR = Path(__file__).resolve().parent / "definitions" / "profiles"
+FIELD_CONTROL_TYPES = {"text", "select", "number", "wallet", "metadata_remaps", "include_schemas"}
+JOB_RUN_CONTROL_TYPES = {"checkbox", "multiselect", "schedule", "select", "text", "textarea"}
+JOB_RUN_CONTROL_KEYS = {
+    "advisor_mode",
+    "flow_control",
+    "flow_phase",
+    "genfixup",
+    "ignore",
+    "schedule",
+    "listphases",
+    "custom_args",
+}
+JOB_RUN_CONTROL_CONFIG_KEYS = {
+    "control",
+    "default",
+    "help",
+    "label",
+    "now_label",
+    "now_value",
+    "options",
+    "text_help",
+    "text_label",
+}
+RULE_GROUP_FAMILIES = {"logical", "physical"}
+RULE_GROUP_ROLES = {"source", "target"}
+RESPONSE_FILE_KEYS = {
+    "additional_parameters",
+    "default_medium",
+    "derived_fields",
+    "fields",
+    "media",
+    "platform_mediums",
+    "sections",
+    "ui",
+    "validation",
+}
+JOB_SUBMISSION_KEYS = {"fields", "run_controls", "run_defaults", "sections"}
+PROFILE_KEYS = {"method", "migration_type", "decision_inputs", "response_file", "job_submission"}
+
+
 @dataclass(frozen=True)
 class MediumOption:
     value: str
@@ -62,9 +102,24 @@ class MigrationProfile:
         return self.fields.get(str(key), {})
 
     def _validate_schema(self) -> None:
+        unknown_profile_keys = sorted(str(key) for key in self.data.keys() if str(key) not in PROFILE_KEYS)
+        if unknown_profile_keys:
+            raise ValueError(
+                f"{self.path} profile has invalid keys: "
+                + ", ".join(unknown_profile_keys)
+            )
+
+        self._validate_decision_inputs_config()
+
         response_file = self.data.get("response_file")
         if not isinstance(response_file, Mapping):
             raise ValueError(f"{self.path} response_file must be a mapping")
+        unknown_response_file_keys = sorted(str(key) for key in response_file.keys() if str(key) not in RESPONSE_FILE_KEYS)
+        if unknown_response_file_keys:
+            raise ValueError(
+                f"{self.path} response_file has invalid keys: "
+                + ", ".join(unknown_response_file_keys)
+            )
 
         fields = response_file.get("fields")
         if not isinstance(fields, Mapping) or not fields:
@@ -74,13 +129,29 @@ class MigrationProfile:
                 raise ValueError(f"{self.path} response_file.fields contains a blank field key")
             if not isinstance(config, Mapping):
                 raise ValueError(f"{self.path} response_file.fields.{key} must be a mapping")
+            self._validate_response_field_config(str(key), config)
 
         field_keys = {str(key) for key in fields.keys()}
+        derived_fields = response_file.get("derived_fields") or []
+        if derived_fields:
+            derived_fields = _field_list(derived_fields, f"{self.path} response_file.derived_fields")
+            overlap = sorted(set(derived_fields) & field_keys)
+            if overlap:
+                raise ValueError(
+                    f"{self.path} response_file.derived_fields duplicates editable fields: "
+                    + ", ".join(overlap)
+                )
 
         sections = response_file.get("sections")
         if not isinstance(sections, Mapping) or not sections:
             raise ValueError(f"{self.path} response_file.sections must be a non-empty mapping")
         _validate_section_references(self.path, "response_file.sections", sections, field_keys)
+        section_keys = {str(key) for key in sections.keys()}
+
+        ui = response_file.get("ui")
+        if not isinstance(ui, Mapping) or not ui:
+            raise ValueError(f"{self.path} response_file.ui must be a non-empty mapping")
+        self._validate_response_ui(ui, section_keys)
 
         media = response_file.get("media")
         if not isinstance(media, Mapping) or not media:
@@ -106,6 +177,10 @@ class MigrationProfile:
             if medium_sections:
                 if not isinstance(medium_sections, Mapping):
                     raise ValueError(f"{self.path} response_file.media.{medium_key}.sections must be a mapping")
+                self._validate_response_ui_section_labels(
+                    f"response_file.media.{medium_key}.sections",
+                    {str(key) for key in medium_sections.keys()},
+                )
                 medium_section_fields = _section_field_refs(
                     medium_sections,
                     f"{self.path} response_file.media.{medium_key}.sections",
@@ -144,12 +219,21 @@ class MigrationProfile:
         job_submission = self.data.get("job_submission")
         if not isinstance(job_submission, Mapping) or not job_submission:
             raise ValueError(f"{self.path} job_submission must be a non-empty mapping")
+        unknown_job_submission_keys = sorted(
+            str(key) for key in job_submission.keys() if str(key) not in JOB_SUBMISSION_KEYS
+        )
+        if unknown_job_submission_keys:
+            raise ValueError(
+                f"{self.path} job_submission has invalid keys: "
+                + ", ".join(unknown_job_submission_keys)
+            )
         job_fields = _field_list(job_submission.get("fields"), f"{self.path} job_submission.fields")
         job_field_keys = set(job_fields)
         job_sections = job_submission.get("sections")
         if not isinstance(job_sections, Mapping) or not job_sections:
             raise ValueError(f"{self.path} job_submission.sections must be a non-empty mapping")
         _validate_section_references(self.path, "job_submission.sections", job_sections, job_field_keys)
+        self._validate_job_run_controls(job_submission)
         run_defaults = job_submission.get("run_defaults") or {}
         if run_defaults:
             if not isinstance(run_defaults, Mapping):
@@ -171,6 +255,54 @@ class MigrationProfile:
                         raise ValueError(
                             f"{self.path} job_submission.run_defaults.{medium_key}.{run_type} must be a mapping"
                         )
+
+    def _validate_job_run_controls(self, job_submission: Mapping[str, Any]) -> None:
+        run_controls = job_submission.get("run_controls")
+        if not isinstance(run_controls, Mapping) or not run_controls:
+            raise ValueError(f"{self.path} job_submission.run_controls must be a non-empty mapping")
+
+        unknown_controls = sorted(str(key) for key in run_controls.keys() if str(key) not in JOB_RUN_CONTROL_KEYS)
+        if unknown_controls:
+            raise ValueError(
+                f"{self.path} job_submission.run_controls has invalid controls: "
+                + ", ".join(unknown_controls)
+            )
+
+        for name, config in run_controls.items():
+            if not isinstance(config, Mapping):
+                raise ValueError(f"{self.path} job_submission.run_controls.{name} must be a mapping")
+            unknown_keys = sorted(str(key) for key in config.keys() if str(key) not in JOB_RUN_CONTROL_CONFIG_KEYS)
+            if unknown_keys:
+                raise ValueError(
+                    f"{self.path} job_submission.run_controls.{name} has invalid keys: "
+                    + ", ".join(unknown_keys)
+                )
+            control = str(config.get("control") or "text")
+            if control not in JOB_RUN_CONTROL_TYPES:
+                raise ValueError(
+                    f"{self.path} job_submission.run_controls.{name}.control has invalid value: {control}"
+                )
+            label = config.get("label")
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(f"{self.path} job_submission.run_controls.{name}.label must be a non-empty string")
+            if control in {"select", "multiselect"}:
+                options = config.get("options")
+                if not isinstance(options, list) or not options:
+                    raise ValueError(
+                        f"{self.path} job_submission.run_controls.{name}.options must be a non-empty list"
+                    )
+                option_values = [str(option) for option in options]
+                if any(option is None for option in options):
+                    raise ValueError(
+                        f"{self.path} job_submission.run_controls.{name}.options must not contain null values"
+                    )
+                default = config.get("default")
+                if control == "select" and default is not None and str(default) not in option_values:
+                    raise ValueError(
+                        f"{self.path} job_submission.run_controls.{name}.default must be listed in options"
+                    )
+            if control == "checkbox" and "default" in config and not isinstance(config.get("default"), bool):
+                raise ValueError(f"{self.path} job_submission.run_controls.{name}.default must be a boolean")
 
     def _validate_response_validation_rules(self, validation: Mapping[str, Any]) -> None:
         defaults = validation.get("defaults") or {}
@@ -214,6 +346,98 @@ class MigrationProfile:
                 allowed,
             )
 
+    def _validate_decision_inputs_config(self) -> None:
+        decision_inputs = self.data.get("decision_inputs") or {}
+        if not decision_inputs:
+            return
+        if not isinstance(decision_inputs, Mapping):
+            raise ValueError(f"{self.path} decision_inputs must be a mapping")
+        controls = decision_inputs.get("controls")
+        if not isinstance(controls, Mapping) or not controls:
+            raise ValueError(f"{self.path} decision_inputs.controls must be a non-empty mapping")
+        for name, config in controls.items():
+            if not str(name).strip():
+                raise ValueError(f"{self.path} decision_inputs.controls contains a blank control name")
+            if not isinstance(config, Mapping):
+                raise ValueError(f"{self.path} decision_inputs.controls.{name} must be a mapping")
+            options = config.get("options")
+            if not isinstance(options, list) or not options:
+                raise ValueError(f"{self.path} decision_inputs.controls.{name}.options must be a non-empty list")
+            option_values = [str(value) for value in options]
+            if any(not value.strip() for value in option_values):
+                raise ValueError(f"{self.path} decision_inputs.controls.{name}.options must not contain blank values")
+            default = config.get("default")
+            if default is not None and str(default) not in option_values:
+                raise ValueError(f"{self.path} decision_inputs.controls.{name}.default must be listed in options")
+            rule_group_ref = config.get("from_rule_group")
+            if rule_group_ref is None:
+                continue
+            parts = str(rule_group_ref).split(".")
+            if len(parts) != 2 or parts[0] not in RULE_GROUP_FAMILIES or parts[1] not in RULE_GROUP_ROLES:
+                raise ValueError(
+                    f"{self.path} decision_inputs.controls.{name}.from_rule_group must use <logical|physical>.<source|target>"
+                )
+
+    def _validate_response_field_config(self, key: str, config: Mapping[str, Any]) -> None:
+        control = str(config.get("control") or "text")
+        if control not in FIELD_CONTROL_TYPES:
+            raise ValueError(
+                f"{self.path} response_file.fields.{key}.control has invalid value: {control}"
+            )
+        if control != "select":
+            return
+        options = config.get("options")
+        if not isinstance(options, list) or not options:
+            raise ValueError(
+                f"{self.path} response_file.fields.{key}.options must be a non-empty list for select controls"
+            )
+
+    def _validate_response_ui(self, ui: Mapping[str, Any], section_keys: set[str]) -> None:
+        layout = ui.get("layout")
+        if not isinstance(layout, list) or not layout:
+            raise ValueError(f"{self.path} response_file.ui.layout must be a non-empty list")
+        medium_fields_title = ui.get("medium_fields_title")
+        if not isinstance(medium_fields_title, str) or not medium_fields_title.strip():
+            raise ValueError(f"{self.path} response_file.ui.medium_fields_title must be a non-empty string")
+        section_labels = ui.get("section_labels")
+        if not isinstance(section_labels, Mapping):
+            raise ValueError(f"{self.path} response_file.ui.section_labels must be a mapping")
+        self._validate_response_ui_section_labels("response_file.sections", section_keys)
+
+        for index, item in enumerate(layout, start=1):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"{self.path} response_file.ui.layout[{index}] must be a mapping")
+            item_type = str(item.get("type") or "")
+            if item_type not in {"tabs", "sections", "medium", "additional_parameters", "section"}:
+                raise ValueError(f"{self.path} response_file.ui.layout has invalid item type: {item_type}")
+            if item_type == "tabs":
+                _validate_ui_title(self.path, item, f"response_file.ui.layout[{index}]")
+                tabs = _field_list(item.get("tabs"), f"{self.path} response_file.ui.layout[{index}].tabs")
+                if not tabs:
+                    raise ValueError(f"{self.path} response_file.ui.layout[{index}].tabs must not be empty")
+                _validate_known_sections(self.path, "response_file.ui.layout", tabs, section_keys)
+                continue
+            if item_type == "sections":
+                _validate_ui_title(self.path, item, f"response_file.ui.layout[{index}]")
+                refs = _layout_section_refs(item.get("sections"), f"{self.path} response_file.ui.layout[{index}].sections")
+                _validate_known_sections(self.path, "response_file.ui.layout", refs, section_keys)
+                continue
+            if item_type == "section":
+                section = str(item.get("section") or "")
+                if not section:
+                    raise ValueError(f"{self.path} response_file.ui.layout[{index}].section must be a non-empty string")
+                _validate_known_sections(self.path, "response_file.ui.layout", [section], section_keys)
+                continue
+            if item_type == "additional_parameters":
+                _validate_ui_title(self.path, item, f"response_file.ui.layout[{index}]")
+
+    def _validate_response_ui_section_labels(self, label: str, section_keys: set[str]) -> None:
+        section_labels = self._response_ui_config().get("section_labels") or {}
+        label_keys = {str(key) for key in section_labels.keys()} if isinstance(section_labels, Mapping) else set()
+        missing = sorted(key for key in section_keys if key not in label_keys)
+        if missing:
+            raise ValueError(f"{self.path} response_file.ui.section_labels missing {label}: " + ", ".join(missing))
+
     def common_response_field_keys(self) -> List[str]:
         sections = self._response_file_config().get("sections") or {}
         return _flatten_field_groups(sections)
@@ -236,6 +460,19 @@ class MigrationProfile:
         value = _nested_section_value(sections, section)
         return _flatten_field_groups(value)
 
+    @property
+    def job_run_controls(self) -> Mapping[str, Mapping[str, Any]]:
+        controls = self._job_submission_config().get("run_controls") or {}
+        if not isinstance(controls, Mapping):
+            return {}
+        return {
+            str(key): value if isinstance(value, Mapping) else {}
+            for key, value in controls.items()
+        }
+
+    def job_run_control(self, name: str) -> Mapping[str, Any]:
+        return self.job_run_controls.get(str(name), {})
+
     def medium_keys(self) -> List[str]:
         return [str(key) for key in self.media.keys()]
 
@@ -243,9 +480,9 @@ class MigrationProfile:
         return self.media.get(normalize_method(medium), {})
 
     @property
-    def scenario_controls(self) -> Mapping[str, Mapping[str, Any]]:
+    def decision_input_controls(self) -> Mapping[str, Mapping[str, Any]]:
         controls = (
-            self._scenario_config().get("controls")
+            self._decision_inputs_config().get("controls")
             or {}
         )
         if not isinstance(controls, Mapping):
@@ -255,8 +492,8 @@ class MigrationProfile:
             for key, value in controls.items()
         }
 
-    def scenario_control(self, name: str) -> Mapping[str, Any]:
-        return self.scenario_controls.get(str(name), {})
+    def decision_input_control(self, name: str) -> Mapping[str, Any]:
+        return self.decision_input_controls.get(str(name), {})
 
     def medium_field_keys(self, medium: Any, include_advanced: bool = False) -> List[str]:
         config = self.medium(medium)
@@ -273,9 +510,42 @@ class MigrationProfile:
         value = _nested_section_value(sections, section)
         return _flatten_field_groups(value)
 
+    def medium_section_names(self, medium: Any) -> List[str]:
+        config = self.medium(medium)
+        sections = config.get("sections") or {}
+        if not isinstance(sections, Mapping):
+            return []
+        return [str(key) for key in sections.keys()]
+
+    def medium_unsectioned_field_keys(self, medium: Any) -> List[str]:
+        config = self.medium(medium)
+        fields = [str(key) for key in config.get("fields") or []]
+        sections = config.get("sections") or {}
+        if not isinstance(sections, Mapping) or not sections:
+            return fields
+        section_fields = set(_section_field_refs(sections, f"{self.path} response_file.media.{medium}.sections"))
+        return [key for key in fields if key not in section_fields]
+
+    def response_layout(self) -> List[Dict[str, Any]]:
+        ui = self._response_ui_config()
+        return [_copy_layout_item(item) for item in ui.get("layout") or [] if isinstance(item, Mapping)]
+
+    def section_label(self, section: str) -> str:
+        labels = self._response_ui_config().get("section_labels") or {}
+        if isinstance(labels, Mapping) and section in labels:
+            return str(labels[section])
+        raise ValueError(f"{self.path} response_file.ui.section_labels missing section: {section}")
+
+    def medium_fields_title(self) -> str:
+        title = self._response_ui_config().get("medium_fields_title")
+        if isinstance(title, str) and title.strip():
+            return title
+        raise ValueError(f"{self.path} response_file.ui.medium_fields_title must be a non-empty string")
+
     def all_response_field_keys(self, medium: Any = None, include_advanced: bool = False) -> List[str]:
         keys = ["MIGRATION_METHOD", "DATA_TRANSFER_MEDIUM"]
-        keys += self.scenario_response_field_keys()
+        keys += self.decision_input_response_field_keys()
+        keys += self.derived_response_field_keys()
         keys += self.common_response_field_keys()
         media_to_include = [normalize_method(medium)] if medium else self.medium_keys()
         for medium_key in media_to_include:
@@ -283,8 +553,12 @@ class MigrationProfile:
         keys += ["include_schemas", "DATAPUMPSETTINGS_METADATAREMAPS", "additional"]
         return _unique(keys)
 
-    def scenario_response_field_keys(self) -> List[str]:
-        return self._scenario_response_keys()
+    def derived_response_field_keys(self) -> List[str]:
+        values = self._response_file_config().get("derived_fields") or []
+        return [str(value) for value in values] if isinstance(values, list) else []
+
+    def decision_input_response_field_keys(self) -> List[str]:
+        return self._decision_input_response_keys()
 
     def platform_medium_keys(self, platform: Any) -> List[str]:
         platform_key = normalize_method(platform)
@@ -427,9 +701,9 @@ class MigrationProfile:
 
         return False
 
-    def scenario_response_values(self, values: Mapping[str, Any]) -> Dict[str, Any]:
-        controls = self.scenario_controls
-        context = self._scenario_context(values, controls)
+    def decision_input_response_values(self, values: Mapping[str, Any]) -> Dict[str, Any]:
+        controls = self.decision_input_controls
+        context = self._decision_input_context(values, controls)
         condition_context = self._condition_context(context)
         out: Dict[str, Any] = {}
         for name, config in controls.items():
@@ -448,14 +722,14 @@ class MigrationProfile:
                 continue
             if not condition_matches(write_when, condition_context):
                 continue
-            value = self._explicit_scenario_value(values, str(name), str(response_key))
+            value = self._explicit_decision_input_value(values, str(name), str(response_key))
             if value in (None, ""):
                 continue
             out[str(response_key)] = value
         return out
 
-    def _scenario_response_keys(self) -> List[str]:
-        controls = self.scenario_controls
+    def _decision_input_response_keys(self) -> List[str]:
+        controls = self.decision_input_controls
         keys: List[str] = []
         for config in controls.values():
             response_key = config.get("response_key")
@@ -485,12 +759,16 @@ class MigrationProfile:
         values = platform_mediums.get(normalize_method(platform))
         return {normalize_method(value) for value in values} if values else set()
 
-    def _scenario_config(self) -> Mapping[str, Any]:
-        config = self.data.get("scenario") or {}
+    def _decision_inputs_config(self) -> Mapping[str, Any]:
+        config = self.data.get("decision_inputs") or {}
         return config if isinstance(config, Mapping) else {}
 
     def _response_file_config(self) -> Mapping[str, Any]:
         config = self.data.get("response_file") or {}
+        return config if isinstance(config, Mapping) else {}
+
+    def _response_ui_config(self) -> Mapping[str, Any]:
+        config = self._response_file_config().get("ui") or {}
         return config if isinstance(config, Mapping) else {}
 
     def _job_submission_config(self) -> Mapping[str, Any]:
@@ -505,7 +783,7 @@ class MigrationProfile:
             result[key_s.lower()] = value
         return result
 
-    def _scenario_context(
+    def _decision_input_context(
         self,
         values: Mapping[str, Any],
         controls: Mapping[str, Any],
@@ -526,7 +804,7 @@ class MigrationProfile:
                 context[response_key] = value
         return context
 
-    def _explicit_scenario_value(
+    def _explicit_decision_input_value(
         self,
         values: Mapping[str, Any],
         control_name: str,
@@ -618,6 +896,69 @@ def _validate_known_fields(
     unknown = sorted(str(field) for field in fields if str(field) not in known_fields)
     if unknown:
         raise ValueError(f"{path} {label} references unknown fields: " + ", ".join(unknown))
+
+
+def _validate_known_sections(
+    path: Path,
+    label: str,
+    sections: Iterable[str],
+    known_sections: set[str],
+) -> None:
+    unknown = sorted(str(section) for section in sections if str(section) not in known_sections)
+    if unknown:
+        raise ValueError(f"{path} {label} references unknown sections: " + ", ".join(unknown))
+
+
+def _validate_ui_title(path: Path, item: Mapping[str, Any], label: str) -> None:
+    title = item.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError(f"{path} {label}.title must be a non-empty string")
+
+
+def _layout_section_refs(value: Any, label: str) -> List[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list")
+    if not value:
+        raise ValueError(f"{label} must not be empty")
+    refs: List[str] = []
+    for index, item in enumerate(value, start=1):
+        if isinstance(item, str):
+            if not item.strip():
+                raise ValueError(f"{label}[{index}] must not be blank")
+            refs.append(item)
+            continue
+        if isinstance(item, Mapping):
+            title = item.get("title")
+            if not isinstance(title, str) or not title.strip():
+                raise ValueError(f"{label}[{index}].title must be a non-empty string")
+            refs.extend(_layout_section_refs(item.get("sections"), f"{label}[{index}].sections"))
+            continue
+        raise ValueError(f"{label}[{index}] must be a section name or group mapping")
+    return refs
+
+
+def _copy_layout_item(item: Mapping[str, Any]) -> Dict[str, Any]:
+    copied: Dict[str, Any] = {"type": str(item.get("type") or "")}
+    for key in ("title", "section"):
+        if key in item:
+            copied[key] = item[key]
+    for key in ("tabs", "sections"):
+        if key in item:
+            copied[key] = _copy_layout_entries(item[key])
+    return copied
+
+
+def _copy_layout_entries(value: Any) -> List[Any]:
+    entries: List[Any] = []
+    for item in value or []:
+        if isinstance(item, Mapping):
+            group: Dict[str, Any] = {"title": item.get("title")}
+            if "sections" in item:
+                group["sections"] = _copy_layout_entries(item.get("sections"))
+            entries.append(group)
+        else:
+            entries.append(str(item))
+    return entries
 
 
 def _validate_section_references(

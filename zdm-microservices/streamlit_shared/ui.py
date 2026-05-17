@@ -23,6 +23,11 @@ def st_df_safe(df: pd.DataFrame, **kwargs):
         return st.dataframe(df2, **kwargs)
 
 
+def render_diagnostics(payload: Any, label: str = "Diagnostics") -> None:
+    with st.expander(label, expanded=False):
+        st.json(payload, expanded=False)
+
+
 def param_help(key: str, extra: str = "") -> str:
     """Tooltip helper for Streamlit `help=`."""
     if extra:

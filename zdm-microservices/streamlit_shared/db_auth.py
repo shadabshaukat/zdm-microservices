@@ -28,6 +28,7 @@ def render_db_auth_inputs_for_method(
     key_prefix: str,
     method: str,
     wallet_rows: Sequence[Mapping[str, Any]] = (),
+    show_credential_user: bool = True,
 ) -> Dict[str, Any]:
     if method == "password":
         username = st.text_input("DB username", key=f"{key_prefix}_auth_username")
@@ -42,7 +43,7 @@ def render_db_auth_inputs_for_method(
     )
     wallet_row = next((row for row in wallet_rows if row.get("name") == selected), {})
     credential_username = wallet_row.get("credential_username")
-    if selected != "-- Select wallet --":
+    if selected != "-- Select wallet --" and show_credential_user:
         if credential_username:
             st.caption(f"Credential user: {credential_username}")
         else:

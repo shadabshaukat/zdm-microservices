@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import html
-import re
-from typing import Any, Dict, List, Tuple
+from typing import List
 
 import streamlit as st
 
@@ -14,6 +13,11 @@ from streamlit_shared.api_payload import (
     validate_joblogs_response,
 )
 from streamlit_shared.context import AppContext
+from streamlit_shared.job_progress import (
+    query_result_should_auto_refresh,
+    render_job_progress,
+    should_auto_refresh_status,
+)
 from streamlit_shared.ui import query_param
 
 
@@ -34,51 +38,6 @@ def render(ctx: AppContext) -> None:
     st.subheader("ZDM Job Monitoring")
     st.caption("Look up job status and tail generated logs for ZDM runs.")
 
-    def _parse_zdm_output(out: str) -> Dict[str, Any]:
-        """Best-effort parsing of ZDM output text returned by the job query API."""
-        if not out:
-            return {}
-        parsed: Dict[str, Any] = {}
-
-        m = re.search(r"\bJob ID\s*:\s*(\S+)", out)
-        if m:
-            parsed["job_id"] = m.group(1)
-
-        m = re.search(r"\bJob Type\s*:\s*\"?([A-Za-z0-9_\-]+)\"?", out)
-        if m:
-            parsed["job_type"] = m.group(1)
-
-        m = re.search(r"\bCurrent status\s*:\s*([A-Za-z0-9_\-]+)", out)
-        if m:
-            parsed["zdm_status"] = m.group(1).upper()
-
-        m = re.search(r"\bResult file path\s*:\s*\"?([^\"\n]+)\"?", out)
-        if m:
-            parsed["result_file"] = m.group(1).strip()
-
-        phases: List[Tuple[str, str]] = []
-        for line in out.splitlines():
-            mm = re.match(r"^(ZDM_[A-Z0-9_]+)\s+\.+\s+([A-Z]+)\s*$", line.strip())
-            if mm:
-                phases.append((mm.group(1), mm.group(2)))
-        if phases:
-            parsed["phases"] = phases
-
-        return parsed
-
-    def _status_badge(status: str) -> Tuple[str, str]:
-        """Return (label, kind) where kind in {'success','warning','error','info'} for Streamlit callouts."""
-        s = (status or "").upper()
-        if s in ("SUCCEEDED", "SUCCESS", "DONE", "COMPLETED"):
-            return s, "success"
-        if s in ("FAILED", "ERROR"):
-            return s, "error"
-        if s in ("RUNNING", "EXECUTING", "IN_PROGRESS"):
-            return s, "warning"
-        if s in ("PENDING", "PLANNED", "QUEUED"):
-            return s, "info"
-        return (s or "-"), "info"
-
     deep_link_job_id = query_param("job_id").strip()
     deep_link_view = "Logs" if query_param("view").lower() == "logs" else "Latest result"
     if deep_link_job_id:
@@ -91,6 +50,7 @@ def render(ctx: AppContext) -> None:
                 st.session_state["jobs_auto_open_log"] = True
             data = api_request_required("get", f"/jobs/{deep_link_job_id}", api_base, auth)
             st.session_state["last_job_query_status"] = validate_payload_or_stop(data, validate_job_query_response)
+            st.session_state["jobs_autorefresh_should_poll"] = True
             st.session_state["jobs_deep_link_key"] = deep_link_key
 
     # -----------------------------
@@ -136,6 +96,7 @@ def render(ctx: AppContext) -> None:
                 data = api_request_required("get", f"/jobs/{job_id_clean}", api_base, auth)
                 st.session_state["last_job_id"] = job_id_clean
                 st.session_state["last_job_query_status"] = validate_payload_or_stop(data, validate_job_query_response)
+                st.session_state["jobs_autorefresh_should_poll"] = True
                 st.session_state["jobs_view"] = "Latest result"
 
     # -----------------------------
@@ -157,51 +118,26 @@ def render(ctx: AppContext) -> None:
         st.markdown("#### Latest result")
         auto_refresh = st.toggle("Auto-refresh (every 5 seconds)", value=False, key="jobs_autorefresh_latest")
 
-        def _render_latest():
+        def _render_latest(should_poll: bool):
             if not last_job_id:
                 st.info("No job queried yet.")
                 return
 
-            if auto_refresh or "last_job_query_status" not in st.session_state:
+            cached_status = st.session_state.get("last_job_query_status")
+            if should_poll and isinstance(cached_status, dict):
+                should_poll = query_result_should_auto_refresh(cached_status)
+
+            if should_poll or "last_job_query_status" not in st.session_state:
                 _poll_latest(last_job_id)
 
             last_status = validate_payload_or_stop(
                 st.session_state.get("last_job_query_status"),
                 validate_job_query_response,
             )
-            api_ok = last_status.get("status")
-            out_text = last_status.get("output") or ""
-
-            parsed = _parse_zdm_output(out_text)
-            zdm_status = parsed.get("zdm_status") or "-"
-            badge_label, badge_kind = _status_badge(zdm_status)
-
-            cols = st.columns([1.05, 0.85, 1.0])
-            with cols[0]:
-                st.metric("Job ID", parsed.get("job_id") or last_job_id)
-            with cols[1]:
-                st.metric("Job Type", parsed.get("job_type") or "-")
-            with cols[2]:
-                st.metric("ZDM Status", badge_label)
-
-            if badge_kind == "error":
-                st.error("ZDM job status: FAILED")
-            elif badge_kind == "success":
-                st.success("ZDM job status: SUCCESS")
-            elif badge_kind == "warning":
-                st.warning("ZDM job is still running / in progress")
-            else:
-                st.info("ZDM job status is not available yet (or could not be parsed).")
-
-            if api_ok:
-                st.caption(f"API response: {api_ok}")
-
-            phases = parsed.get("phases") or []
-            if phases:
-                with st.expander("Phases", expanded=False):
-                    for name, stt in phases:
-                        st.write(f"- **{name}**: {stt}")
-
+            parsed = render_job_progress(last_job_id, last_status)
+            st.session_state["jobs_autorefresh_should_poll"] = should_auto_refresh_status(
+                parsed.get("zdm_status") or ""
+            )
             result_file = parsed.get("result_file")
             if result_file:
                 preferred_name = str(result_file).rstrip("/").rsplit("/", 1)[-1]
@@ -209,24 +145,20 @@ def render(ctx: AppContext) -> None:
                 st.session_state["log_select"] = preferred_name
                 st.session_state["jobs_auto_open_log"] = True
 
-            with st.expander("Raw output", expanded=False):
-                if out_text:
-                    st.text_area("Raw output", value=out_text, height=260, disabled=True, label_visibility="collapsed")
-                else:
-                    st.info("No output text returned.")
-
-            with st.expander("Raw JSON", expanded=False):
-                st.json(last_status, expanded=False)
-
-        if auto_refresh and last_job_id and hasattr(st, "fragment"):
+        auto_refresh_active = (
+            auto_refresh
+            and last_job_id
+            and st.session_state.get("jobs_autorefresh_should_poll", True)
+        )
+        if auto_refresh_active and hasattr(st, "fragment"):
             @st.fragment(run_every=5)
             def _latest_fragment():
-                _render_latest()
+                _render_latest(should_poll=True)
             _latest_fragment()
         else:
-            if auto_refresh and not hasattr(st, "fragment"):
+            if auto_refresh_active and not hasattr(st, "fragment"):
                 st.caption("Auto-refresh requires a newer Streamlit version (st.fragment).")
-            _render_latest()
+            _render_latest(should_poll=False)
 
     else:
         st.markdown("#### Job logs")

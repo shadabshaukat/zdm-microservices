@@ -1,30 +1,54 @@
 method: OFFLINE_LOGICAL
 migration_type: Logical
 
-scenario:
+decision_inputs:
   controls:
-    source_type:
-      label: Source type
+    source_group:
+      label: Logical source group
+      from_rule_group: logical.source
       options: [ORACLE_DATABASE, AWS_RDS_ORACLE]
       labels:
-        ORACLE_DATABASE: Oracle Database
-        AWS_RDS_ORACLE: AWS RDS Oracle
+        ORACLE_DATABASE: Oracle Database source
+        AWS_RDS_ORACLE: AWS RDS Oracle source
       default: ORACLE_DATABASE
-      response_values:
-        AWS_RDS_ORACLE:
-          SOURCEDATABASE_ENVIRONMENT_NAME: AMAZON
-          SOURCEDATABASE_ENVIRONMENT_DBTYPE: RDS_ORACLE
-    target_type:
-      label: Target type
+    target_group:
+      label: Logical target group
+      from_rule_group: logical.target
       options: [ADB, CO_MANAGED, USER_MANAGED]
       labels:
-        ADB: Autonomous Database
-        CO_MANAGED: Co-managed Oracle Database
-        USER_MANAGED: User-managed Oracle Database
+        ADB: Autonomous Database target
+        CO_MANAGED: Co-managed Oracle Database target
+        USER_MANAGED: User-managed Oracle Database target
       default: ADB
 
 response_file:
   default_medium: OSS
+
+  ui:
+    medium_fields_title: Transfer settings
+    section_labels:
+      source_database: Source database
+      target_database: Target database
+      transfer_settings: Transfer settings
+      oci_authentication: OCI authentication
+      data_pump: Data Pump
+      tablespace: Tablespace remap
+      remaps: Metadata remaps
+      schemas: Schemas
+    layout:
+      - type: tabs
+        title: Source & Target
+        tabs: [source_database, target_database]
+      - type: medium
+      - type: sections
+        title: Data Pump
+        sections:
+          - data_pump
+          - title: Tablespace remap
+            sections: [tablespace, remaps]
+          - schemas
+      - type: additional_parameters
+        title: Additional parameters (key/value)
 
   validation:
     defaults:
@@ -43,16 +67,6 @@ response_file:
       DATAPUMPSETTINGS_JOBMODE:
         value: SCHEMA
         write: false
-      SOURCEDATABASE_ENVIRONMENT_NAME:
-        value: AMAZON
-        when:
-          field_equals:
-            DATA_TRANSFER_MEDIUM: AMAZON3
-      SOURCEDATABASE_ENVIRONMENT_DBTYPE:
-        value: RDS_ORACLE
-        when:
-          field_equals:
-            DATA_TRANSFER_MEDIUM: AMAZON3
 
     required:
       - key: SOURCEDATABASE_CONNECTIONDETAILS_HOST
@@ -138,6 +152,10 @@ response_file:
         when:
           field_equals:
             DATA_TRANSFER_MEDIUM: AMAZON3
+
+  derived_fields:
+    - SOURCEDATABASE_ENVIRONMENT_NAME
+    - SOURCEDATABASE_ENVIRONMENT_DBTYPE
 
   fields:
     SOURCEDATABASE_CONNECTIONDETAILS_HOST:
@@ -255,10 +273,10 @@ response_file:
       default: "TRUE"
     DATAPUMPSETTINGS_METADATAREMAPS:
       label: Metadata remaps
-      control: table
+      control: metadata_remaps
     INCLUDEOBJECTS:
       label: Schemas to include
-      control: textarea
+      control: include_schemas
 
   sections:
     source_database:
@@ -320,7 +338,7 @@ response_file:
       unavailable_hint: Requires a co-managed or user-managed target with shared storage/FSS.
       show_when:
         field_in:
-          target_type: [CO_MANAGED, USER_MANAGED]
+          target_group: [CO_MANAGED, USER_MANAGED]
       fields:
         - DUMPTRANSFERDETAILS_SHAREDSTORAGE_NAME
         - DUMPTRANSFERDETAILS_SHAREDSTORAGE_HOST
@@ -342,7 +360,7 @@ response_file:
       unavailable_hint: Requires SSH access and a co-managed or user-managed target.
       show_when:
         field_in:
-          target_type: [CO_MANAGED, USER_MANAGED]
+          target_group: [CO_MANAGED, USER_MANAGED]
       fields: []
       advanced_fields:
         - DUMPTRANSFERDETAILS_TRANSFERTARGET_HOST
@@ -355,7 +373,7 @@ response_file:
       unavailable_hint: Requires a co-managed or user-managed target.
       show_when:
         field_in:
-          target_type: [CO_MANAGED, USER_MANAGED]
+          target_group: [CO_MANAGED, USER_MANAGED]
       fields: []
     AMAZON3:
       label: Amazon S3
@@ -364,9 +382,9 @@ response_file:
       show_when:
         all:
           - field_equals:
-              source_type: AWS_RDS_ORACLE
+              source_group: AWS_RDS_ORACLE
           - field_equals:
-              target_type: ADB
+              target_group: ADB
       fields:
         - DUMPTRANSFERDETAILS_S3BUCKET_NAME
         - DUMPTRANSFERDETAILS_S3BUCKET_REGION
@@ -404,6 +422,44 @@ job_submission:
       - tgtarg1
       - tgtarg2
       - tgtarg3
+  run_controls:
+    advisor_mode:
+      label: Advisor mode
+      control: select
+      options: [NONE, ADVISOR, IGNORE_ADVISOR, SKIP_ADVISOR]
+      default: NONE
+    flow_control:
+      label: Flow control
+      control: select
+      options: [NONE, PAUSE_AFTER, STOP_AFTER]
+      default: NONE
+    flow_phase:
+      label: Phase (for pause/stop)
+      control: text
+      help: Required when flow control is pause/stop
+    genfixup:
+      label: Genfixup
+      control: select
+      options: ["", "YES", "NO"]
+      default: ""
+    ignore:
+      label: Ignore checks
+      control: multiselect
+      options: [ALL, WARNING, PATCH_CHECK, NLS_CHECK, NLS_NCHAR_CHECK, ENDIAN_CHECK, VAULT_CHECK, DB_NK_CACHE_SIZE_CHECK]
+    schedule:
+      label: Schedule
+      control: schedule
+      now_label: Schedule NOW
+      text_label: Schedule (ISO-8601)
+      text_help: YYYY-MM-DDTHH:MM:SS±HH
+      now_value: NOW
+    listphases:
+      label: List phases (-listphases)
+      control: checkbox
+      default: false
+    custom_args:
+      label: Custom args (one per line, full token e.g. '-myflag value')
+      control: textarea
   run_defaults:
     MANUAL_COPY:
       MIGRATE:

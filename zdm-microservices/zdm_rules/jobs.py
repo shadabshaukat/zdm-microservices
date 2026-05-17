@@ -40,10 +40,11 @@ def build_migrate_command(profile: MigrationProfile, params: Mapping[str, Any]) 
     if advisor != "ADVISOR" and run_type == "EVAL":
         lines.append("    -eval \\")
 
-    if params.get("genfixup"):
-        lines.append(f"    -genfixup {params.get('genfixup')} \\")
+    genfixup = _canonical_select_value(profile, "genfixup", params.get("genfixup"))
+    if genfixup:
+        lines.append(f"    -genfixup {genfixup} \\")
 
-    ignore_list = params.get("ignore") or []
+    ignore_list = _canonical_multiselect_values(profile, "ignore", params.get("ignore") or [])
     if ignore_list:
         if "ALL" in ignore_list:
             lines.append("    -ignore ALL \\")
@@ -89,10 +90,81 @@ def _validate_migrate_params(profile: MigrationProfile, params: Mapping[str, Any
     if not nonblank(params.get("rsp")):
         raise ValueError("rsp is required")
 
+    validate_job_run_controls(profile, params)
+
     flow_control = normalize_method(params.get("flow_control") or "NONE")
     if flow_control in ("PAUSE_AFTER", "STOP_AFTER") and not nonblank(params.get("flow_phase")):
         raise ValueError(f"{flow_control.lower()} requires flow_phase")
     _validate_job_parameters(profile, params)
+
+
+def validate_job_run_controls(profile: MigrationProfile, params: Mapping[str, Any]) -> None:
+    for name, config in profile.job_run_controls.items():
+        if name not in params:
+            continue
+        value = params.get(name)
+        control = str(config.get("control") or "text")
+        if value is None:
+            continue
+        if control == "select":
+            _canonical_select_value(profile, name, value)
+        elif control == "multiselect":
+            _canonical_multiselect_values(profile, name, value)
+        elif control == "checkbox":
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean")
+        elif control == "textarea":
+            if value in ("", []):
+                continue
+            if not isinstance(value, list):
+                raise ValueError(f"{name} must be a list")
+        elif control in {"schedule", "text"}:
+            if value == "":
+                continue
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+
+
+def _canonical_select_value(profile: MigrationProfile, name: str, value: Any) -> str:
+    if not nonblank(value):
+        return ""
+    lookup = _control_option_lookup(profile.job_run_control(name))
+    normalized = normalize_method(value)
+    if normalized not in lookup:
+        raise ValueError(f"{name} must be one of: {_control_option_display(lookup)}")
+    return lookup[normalized]
+
+
+def _canonical_multiselect_values(profile: MigrationProfile, name: str, value: Any) -> List[str]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be a list")
+    lookup = _control_option_lookup(profile.job_run_control(name))
+    values: List[str] = []
+    for item in value:
+        if not nonblank(item):
+            continue
+        normalized = normalize_method(item)
+        if normalized not in lookup or not lookup[normalized]:
+            raise ValueError(
+                f"{name} contains unsupported value: {item}. "
+                f"Allowed values: {_control_option_display(lookup)}"
+            )
+        values.append(lookup[normalized])
+    return values
+
+
+def _control_option_lookup(config: Mapping[str, Any]) -> Dict[str, str]:
+    return {
+        normalize_method(option): str(option)
+        for option in config.get("options") or []
+    }
+
+
+def _control_option_display(lookup: Mapping[str, str]) -> str:
+    values = [value for value in lookup.values() if value]
+    return ", ".join(values) if values else "(none)"
 
 
 def _default_pause_after(profile: MigrationProfile, params: Mapping[str, Any], run_type: str) -> str:

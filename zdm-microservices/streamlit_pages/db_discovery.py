@@ -19,8 +19,9 @@ from streamlit_shared.db_auth import (
     render_db_auth_method,
     validate_db_auth_selection,
 )
-from streamlit_shared.ui import st_df_safe
-from streamlit_shared.wallet_payload import validate_credential_wallet_rows
+from streamlit_shared.response_file_form import active_migration_method_options
+from streamlit_shared.ui import render_diagnostics, st_df_safe
+from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -34,15 +35,9 @@ def render(ctx: AppContext) -> None:
         validate_dbconnections_response,
     )
     conn_names = ["-- Select connection --"] + list(conns.keys())
-    discovery_migration_types = {
-        "Logical Offline": "OFFLINE_LOGICAL",
-        "Logical Online": "ONLINE_LOGICAL",
-        "Physical Online": "ONLINE_PHYSICAL",
-        "Physical Offline": "OFFLINE_PHYSICAL",
-        "Hybrid Offline": "HYBRID_OFFLINE",
-    }
+    discovery_migration_types = active_migration_method_options()
     if st.session_state.get("disc_mt") not in discovery_migration_types:
-        st.session_state["disc_mt"] = "Logical Offline"
+        st.session_state["disc_mt"] = next(iter(discovery_migration_types), "")
 
     col_sel, col_mt = st.columns([0.6, 0.4], vertical_alignment="bottom")
     with col_sel:
@@ -54,13 +49,14 @@ def render(ctx: AppContext) -> None:
     wallet_rows = []
     if auth_method == "credential_wallet":
         wallet_rows = validate_payload_or_stop(
-            api_request_required("get", "/credential-wallets", api_base, auth),
-            validate_credential_wallet_rows,
+            api_request_required("get", "/credential-wallets/names", api_base, auth),
+            validate_credential_wallet_names_response,
         )
     auth_payload = render_db_auth_inputs_for_method(
         key_prefix="disc",
         method=auth_method,
         wallet_rows=wallet_rows,
+        show_credential_user=False,
     )
 
     # -------- helpers (normalize once, then render) --------
@@ -287,7 +283,7 @@ def render(ctx: AppContext) -> None:
         if str(normalized.get("migration_type") or "").startswith("LOGICAL_"):
             profiles_tab_idx = len(tab_names)
             tab_names.append("Profiles")
-        tab_names.append("Raw JSON")
+        tab_names.append("Diagnostics")
         tabs = st.tabs(tab_names)
 
         with tabs[0]:
@@ -393,10 +389,14 @@ def render(ctx: AppContext) -> None:
                 try:
                     profile_rows, profile_error = discovery_profile_rows(snapshot)
                 except ValueError as exc:
-                    st.error(str(exc))
+                    st.error("ZEUS could not read the custom profile details in this discovery snapshot.")
+                    with st.expander("Technical details", expanded=False):
+                        st.code(str(exc))
                 else:
                     if profile_error:
-                        st.error(f"Profile discovery query failed: {profile_error}")
+                        st.error("Profile discovery did not complete.")
+                        with st.expander("Technical details", expanded=False):
+                            st.code(profile_error)
                     elif profile_rows:
                         script = "\n\n".join(
                             row["PROFILE_DDL"].rstrip().rstrip(";") + ";"
@@ -431,4 +431,4 @@ def render(ctx: AppContext) -> None:
                         st.info("No custom profile DDL returned for this logical discovery snapshot.")
 
         with tabs[-1]:
-            st.json(snapshot, expanded=False)
+            render_diagnostics(snapshot)

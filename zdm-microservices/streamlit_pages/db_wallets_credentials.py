@@ -46,7 +46,6 @@ def render(ctx: AppContext) -> None:
                         endpoint="POST /wallets/ora-pki",
                     )
                     st.success(validated["status"])
-                    st.json(validated)
                     st.rerun()
 
     with right:
@@ -86,7 +85,6 @@ def render(ctx: AppContext) -> None:
                         endpoint="POST /wallets/mkstore-credential",
                     )
                     st.success(validated["status"])
-                    st.json(validated)
                     st.rerun()
 
     st.markdown("### Saved wallets")

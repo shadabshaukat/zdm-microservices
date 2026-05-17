@@ -4,6 +4,7 @@ import streamlit as st
 
 from streamlit_shared.api_client import ping_backend
 from streamlit_shared.context import AppContext
+from streamlit_shared.ui import render_diagnostics
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -15,13 +16,13 @@ def render(ctx: AppContext) -> None:
     password = ctx.password
 
     st.subheader("ZEUS Settings")
-    st.caption("Configure the FastAPI endpoint and Basic Auth used by ZEUS UI.")
+    st.caption("Configure the ZEUS backend endpoint and login used by the UI.")
 
     left, right = st.columns([1.2, 1])
 
     with left:
         with st.form("backend_settings"):
-            new_api_base = st.text_input("API Base URL", value=api_base or default_base).rstrip("/")
+            new_api_base = st.text_input("ZEUS Backend URL", value=api_base or default_base).rstrip("/")
             new_username = st.text_input("Username", value=username or default_user)
             new_password = st.text_input("Password", value=password or default_password, type="password")
             save_settings = st.form_submit_button("Save", type="primary")
@@ -37,14 +38,14 @@ def render(ctx: AppContext) -> None:
             ok, used, data, err = ping_backend(api_base, auth)
             if ok:
                 st.success(f"Backend reachable via `{used}`")
-                st.json(data)
+                render_diagnostics(data or {}, label="Backend response")
             else:
                 st.error(
-                    "Backend unreachable. Check API_BASE_URL and TLS trust. "
-                    "If using self-signed cert, set REQUESTS_CA_BUNDLE to zeus.crt."
+                    "Backend unreachable. Check the ZEUS Backend URL and TLS certificate trust."
                 )
                 if err:
-                    st.caption(f"Ping detail: {err}")
+                    with st.expander("Technical details", expanded=False):
+                        st.code(err)
 
 
 

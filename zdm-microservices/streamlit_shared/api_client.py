@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
 
 import requests
@@ -7,6 +8,52 @@ import streamlit as st
 from requests.auth import HTTPBasicAuth
 
 T = TypeVar("T")
+
+
+def _detail_text(detail: Any) -> str:
+    if detail is None:
+        return ""
+    if isinstance(detail, str):
+        return detail
+    try:
+        return json.dumps(detail, indent=2, sort_keys=True)
+    except TypeError:
+        return str(detail)
+
+
+def _friendly_http_error_message(status_code: Optional[int], detail: Any) -> str:
+    detail_text = _detail_text(detail)
+    if "PRGT-1038" in detail_text or "ZDM service is not running" in detail_text:
+        return "ZDM service is not running or cannot be reached. Start the ZDM service, then try again."
+    if status_code == 404:
+        return "ZEUS backend could not find the requested item."
+    if status_code:
+        return f"ZEUS backend could not complete the request (HTTP {status_code})."
+    return "ZEUS backend could not complete the request."
+
+
+def _show_backend_error(message: str, detail: Any = None) -> None:
+    st.error(message)
+    detail_text = _detail_text(detail)
+    if detail_text and _has_streamlit_context():
+        with st.expander("Technical details", expanded=False):
+            st.code(detail_text)
+
+
+def _has_streamlit_context() -> bool:
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        return get_script_run_ctx(suppress_warning=True) is not None
+    except Exception:
+        return True
+
+
+def _response_error_detail(response: Any) -> Any:
+    try:
+        return response.json()
+    except Exception:
+        return response.text if response is not None else "HTTP error"
 
 
 def api_request(
@@ -31,24 +78,24 @@ def api_request(
         )
         response.raise_for_status()
     except requests.HTTPError as exc:
-        detail = None
-        try:
-            detail = exc.response.json()
-        except Exception:
-            detail = exc.response.text if exc.response is not None else "HTTP error"
+        detail = _response_error_detail(exc.response)
         if not quiet:
-            st.error(f"API error ({exc.response.status_code if exc.response else 'HTTP'}): {detail}")
+            status_code = exc.response.status_code if exc.response is not None else None
+            _show_backend_error(_friendly_http_error_message(status_code, detail), detail)
         return None
     except requests.RequestException as exc:
         if not quiet:
-            st.error(f"Request failed: {exc}")
+            _show_backend_error(
+                "ZEUS backend is not reachable. Check ZEUS Settings and make sure the backend service is running.",
+                str(exc),
+            )
         return None
 
     try:
         return response.json()
     except ValueError:
         if not quiet:
-            st.error("Invalid API response: expected JSON from backend.")
+            _show_backend_error("ZEUS backend returned a response this page cannot read. Expected JSON.")
         return None
 
 
@@ -67,24 +114,24 @@ def api_upload_file(
         response = requests.post(url, files=files, auth=auth, timeout=timeout)
         response.raise_for_status()
     except requests.HTTPError as exc:
-        detail = None
-        try:
-            detail = exc.response.json()
-        except Exception:
-            detail = exc.response.text if exc.response is not None else "HTTP error"
+        detail = _response_error_detail(exc.response)
         if not quiet:
-            st.error(f"API error ({exc.response.status_code if exc.response else 'HTTP'}): {detail}")
+            status_code = exc.response.status_code if exc.response is not None else None
+            _show_backend_error(_friendly_http_error_message(status_code, detail), detail)
         return None
     except requests.RequestException as exc:
         if not quiet:
-            st.error(f"Request failed: {exc}")
+            _show_backend_error(
+                "ZEUS backend is not reachable. Check ZEUS Settings and make sure the backend service is running.",
+                str(exc),
+            )
         return None
 
     try:
         return response.json()
     except ValueError:
         if not quiet:
-            st.error("Invalid API response: expected JSON from backend.")
+            _show_backend_error("ZEUS backend returned a response this page cannot read. Expected JSON.")
         return None
 
 
@@ -141,25 +188,25 @@ def api_request_optional_404(
                 detail = response.text
             if allowed_detail and detail == allowed_detail:
                 return None
-            st.error(f"API error (404): {detail or 'Not found'}")
+            _show_backend_error(_friendly_http_error_message(404, detail or "Not found"), detail or "Not found")
             st.stop()
         response.raise_for_status()
     except requests.HTTPError as exc:
-        detail = None
-        try:
-            detail = exc.response.json()
-        except Exception:
-            detail = exc.response.text if exc.response is not None else "HTTP error"
-        st.error(f"API error ({exc.response.status_code if exc.response else 'HTTP'}): {detail}")
+        detail = _response_error_detail(exc.response)
+        status_code = exc.response.status_code if exc.response is not None else None
+        _show_backend_error(_friendly_http_error_message(status_code, detail), detail)
         st.stop()
     except requests.RequestException as exc:
-        st.error(f"Request failed: {exc}")
+        _show_backend_error(
+            "ZEUS backend is not reachable. Check ZEUS Settings and make sure the backend service is running.",
+            str(exc),
+        )
         st.stop()
 
     try:
         return response.json()
     except ValueError:
-        st.error("Invalid API response: expected JSON from backend.")
+        _show_backend_error("ZEUS backend returned a response this page cannot read. Expected JSON.")
         st.stop()
 
 
@@ -172,7 +219,10 @@ def validate_payload_or_stop(
     try:
         return validator(payload, *args, **kwargs)
     except ValueError as exc:
-        st.error(str(exc))
+        _show_backend_error(
+            "ZEUS received an unexpected response from the backend. Refresh the page or restart the backend if this continues.",
+            str(exc),
+        )
         st.stop()
 
 

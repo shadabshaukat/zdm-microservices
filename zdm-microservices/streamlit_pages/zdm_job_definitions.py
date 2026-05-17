@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 import streamlit as st
 
+from zdm_rules.jobs import job_method_supported
 from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
 from streamlit_shared.api_payload import (
     validate_dbconnections_response,
@@ -15,9 +16,13 @@ from streamlit_shared.db_types import is_adb_database_type
 from streamlit_shared.job_form import (
     SELECT_WALLET,
     JobFieldSpec,
+    JobRunControlSpec,
+    collect_job_run_controls,
     collect_job_parameters,
     job_form_state_keys,
+    job_run_control_state_updates,
     profile_job_field_specs,
+    profile_job_run_control_specs,
     profile_job_section_field_specs,
     wallet_name_for_path,
 )
@@ -27,8 +32,9 @@ from streamlit_shared.job_payload import (
     validate_saved_job_save_response,
     validate_saved_jobs_response,
 )
+from streamlit_shared.response_file_form import migration_method_label
 from streamlit_shared.ui import saved_job_name
-from streamlit_shared.wallet_payload import validate_credential_wallets_response
+from streamlit_shared.wallet_payload import validate_credential_wallet_paths_response
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -50,8 +56,8 @@ def render(ctx: AppContext) -> None:
     saved_jobs_raw = api_request_required("get", "/saved-jobs", api_base, auth)
     saved_jobs_resp = validate_payload_or_stop(saved_jobs_raw, validate_saved_jobs_response)
     # wallets for -sourcesyswallet dropdown
-    cred_wallets_resp = api_request_required("get", "/credential-wallets", api_base, auth)
-    wallet_map_runjob = validate_payload_or_stop(cred_wallets_resp, validate_credential_wallets_response)
+    cred_wallets_resp = api_request_required("get", "/credential-wallets/paths", api_base, auth)
+    wallet_map_runjob = validate_payload_or_stop(cred_wallets_resp, validate_credential_wallet_paths_response)
     wallet_options_runjob = [SELECT_WALLET] + list(wallet_map_runjob.keys())
 
     sel_l, sel_r = st.columns([1, 1], vertical_alignment="top")
@@ -82,14 +88,15 @@ def render(ctx: AppContext) -> None:
 
     proj_obj = projects_resp.get(project)
     if not isinstance(proj_obj, dict):
-        st.error(f"GET /projects API contract error: selected project '{project}' is missing.")
+        st.error(f"Selected project '{project}' is no longer available. Refresh the page and choose a project again.")
         st.stop()
     project_migration_method = str(proj_obj.get("migration_method") or "").strip().upper()
     if not project_migration_method:
-        st.error("Project migration_method is required in projects.json before creating a job.")
+        st.error("This project is missing its migration method. Recreate or update the project before creating a job.")
         st.stop()
-    if project_migration_method != "OFFLINE_LOGICAL":
-        st.error(f"ZDM Job Definitions currently supports OFFLINE_LOGICAL only. Project migration_method is {project_migration_method}.")
+    if not job_method_supported(project_migration_method):
+        method_label = migration_method_label(project_migration_method)
+        st.error(f"ZDM Job Definitions is not enabled for {method_label} yet.")
         st.stop()
     migration_type = project_migration_method
 
@@ -107,15 +114,7 @@ def render(ctx: AppContext) -> None:
                 if spec.control == "wallet":
                     value = wallet_name_for_path(value, wallet_map_runjob)
                 st.session_state[spec.state_key] = value
-            st.session_state["runjob_advisor_mode"] = job.get("advisor_mode") or "NONE"
-            st.session_state["runjob_flow_control"] = job.get("flow_control") or "NONE"
-            st.session_state["runjob_flow_phase"] = job.get("flow_phase") or ""
-            st.session_state["runjob_genfixup"] = job.get("genfixup") or ""
-            st.session_state["runjob_ignore"] = job.get("ignore") or []
-            st.session_state["runjob_schedule_now"] = True if (job.get("schedule") or "").upper() == "NOW" else False
-            st.session_state["runjob_schedule_text"] = "" if st.session_state.get("runjob_schedule_now") else (job.get("schedule") or "")
-            st.session_state["runjob_listphases"] = bool(job.get("listphases"))
-            st.session_state["runjob_custom_args"] = "\n".join(job.get("custom_args") or [])
+            st.session_state.update(job_run_control_state_updates(project_migration_method, job))
             st.session_state[auto_load_state_key] = auto_job_key
             break
 
@@ -139,7 +138,10 @@ def render(ctx: AppContext) -> None:
     if target_conn_name:
         target_conn = connections_resp.get(target_conn_name)
         if not isinstance(target_conn, dict):
-            st.error(f"GET /dbconnections API contract error: project target connection '{target_conn_name}' is missing.")
+            st.error(
+                f"Target connection '{target_conn_name}' is no longer available. "
+                "Update the project or recreate the missing connection."
+            )
             st.stop()
         target_db_type = target_conn.get("db_type", "") or ""
 
@@ -222,48 +224,22 @@ def render(ctx: AppContext) -> None:
         else:
             st.caption("No same-method same-run-type job definitions available.")
 
-        if migration_type == "OFFLINE_LOGICAL":
-            with st.expander("ZDM CLI args (Logical Offline)", expanded=True):
-                source_specs = profile_job_section_field_specs(project_migration_method, "source_database")
-                target_specs = profile_job_section_field_specs(project_migration_method, "target_database")
-                col_opt_a, col_opt_b = st.columns(2)
-                with col_opt_a:
-                    st.markdown("##### Source")
-                    _render_job_fields(source_specs, wallet_options_runjob, wallet_map_runjob)
-                with col_opt_b:
-                    st.markdown("##### Target")
-                    if not is_adb_database_type(target_db_type):
-                        _render_job_fields(target_specs, wallet_options_runjob, wallet_map_runjob)
-                    else:
-                        st.caption("Target SSH arguments are not needed for Autonomous Database targets.")
-
-                st.divider()
-                advisor_mode = st.selectbox("Advisor mode", ["NONE", "ADVISOR", "IGNORE_ADVISOR", "SKIP_ADVISOR"], key="runjob_advisor_mode")
-                flow_control = st.selectbox("Flow control", ["NONE", "PAUSE_AFTER", "STOP_AFTER"], key="runjob_flow_control")
-                flow_phase = st.text_input("Phase (for pause/stop)", key="runjob_flow_phase", help="Required when flow control is pause/stop")
-                genfixup = st.selectbox("Genfixup", ["", "YES", "NO"], key="runjob_genfixup")
-                ignore_opts = ["ALL","WARNING","PATCH_CHECK","NLS_CHECK","NLS_NCHAR_CHECK","ENDIAN_CHECK","VAULT_CHECK","DB_NK_CACHE_SIZE_CHECK"]
-                ignore_sel = st.multiselect("Ignore checks", ignore_opts, key="runjob_ignore")
-                schedule_now = st.checkbox("Schedule NOW", value=st.session_state.get("runjob_schedule_now", False), key="runjob_schedule_now")
-                schedule_val = ""
-                if schedule_now:
-                    schedule_val = "NOW"
+        with st.expander(f"ZDM CLI args ({migration_method_label(project_migration_method)})", expanded=True):
+            source_specs = profile_job_section_field_specs(project_migration_method, "source_database")
+            target_specs = profile_job_section_field_specs(project_migration_method, "target_database")
+            col_opt_a, col_opt_b = st.columns(2)
+            with col_opt_a:
+                st.markdown("##### Source")
+                _render_job_fields(source_specs, wallet_options_runjob, wallet_map_runjob)
+            with col_opt_b:
+                st.markdown("##### Target")
+                if not is_adb_database_type(target_db_type):
+                    _render_job_fields(target_specs, wallet_options_runjob, wallet_map_runjob)
                 else:
-                    schedule_val = st.text_input("Schedule (ISO-8601)", key="runjob_schedule_text", help="YYYY-MM-DDTHH:MM:SS±HH")
-                listphases = st.checkbox("List phases (-listphases)", value=False, key="runjob_listphases")
-                custom_args_text = st.text_area("Custom args (one per line, full token e.g. '-myflag value')", key="runjob_custom_args")
+                    st.caption("Target SSH arguments are not needed for Autonomous Database targets.")
 
-        else:
-            st.info(f"Migration type {migration_type} not yet wired; UI placeholder only.")
-            advisor_mode = st.session_state.get("runjob_advisor_mode", "NONE")
-            flow_control = st.session_state.get("runjob_flow_control", "NONE")
-            flow_phase = st.session_state.get("runjob_flow_phase", "")
-            genfixup = st.session_state.get("runjob_genfixup", "")
-            ignore_sel = st.session_state.get("runjob_ignore", [])
-            schedule_now = False
-            schedule_val = st.session_state.get("runjob_schedule_text", "")
-            listphases = st.session_state.get("runjob_listphases", False)
-            custom_args_text = st.session_state.get("runjob_custom_args", "")
+            st.divider()
+            _render_job_run_controls(profile_job_run_control_specs(project_migration_method))
 
         action_col1, action_col2 = st.columns([0.4, 0.6])
         with action_col1:
@@ -273,29 +249,19 @@ def render(ctx: AppContext) -> None:
         run_clicked = False
 
     if save_only or save_and_run:
+        run_controls = collect_job_run_controls(project_migration_method, st.session_state)
         payload_save = {
             "name": st.session_state.get(job_key),
             "project": project,
             "rsp": (st.session_state.get("runjob_rsp") or "").strip() or None,
             "run_type": st.session_state.get("runjob_run_type"),
             "job_parameters": collect_job_parameters(project_migration_method, st.session_state, wallet_map_runjob),
-            "advisor_mode": advisor_mode,
-            "flow_control": flow_control,
-            "flow_phase": flow_phase,
-            "genfixup": genfixup or None,
-            "ignore": ignore_sel or None,
-            "schedule": schedule_val or None,
-            "listphases": listphases,
-            "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
+            **run_controls,
         }
         payload_save = compact_job_payload(payload_save)
         resp_save = api_request("post", "/saved-jobs", api_base, auth, payload=payload_save)
         if resp_save:
-            try:
-                validate_saved_job_save_response(resp_save, payload_save["name"])
-            except ValueError as exc:
-                st.error(str(exc))
-                st.stop()
+            validate_payload_or_stop(resp_save, validate_saved_job_save_response, payload_save["name"])
             st.success(f"Saved job '{payload_save['name']}'.")
             if save_only and not save_and_run:
                 st.rerun()
@@ -312,14 +278,7 @@ def render(ctx: AppContext) -> None:
                 "run_type": run_type,
                 "rsp": rsp_name,
                 "job_parameters": collect_job_parameters(project_migration_method, st.session_state, wallet_map_runjob),
-                "advisor_mode": advisor_mode,
-                "flow_control": flow_control,
-                "flow_phase": flow_phase or None,
-                "genfixup": genfixup or None,
-                "ignore": ignore_sel or None,
-                "schedule": schedule_val or None,
-                "listphases": listphases,
-                "custom_args": [ln.strip() for ln in (custom_args_text or "").splitlines() if ln.strip()],
+                **collect_job_run_controls(project_migration_method, st.session_state),
             }
             payload = compact_job_payload(payload)
 
@@ -349,3 +308,49 @@ def _render_job_fields(
             st.selectbox(spec.label, wallet_options, key=spec.state_key)
         else:
             st.text_input(spec.label, key=spec.state_key)
+
+
+def _render_job_run_controls(specs: List[JobRunControlSpec]) -> None:
+    for spec in specs:
+        if spec.control == "select":
+            options = list(spec.options)
+            current = st.session_state.get(spec.state_key, spec.default)
+            if current not in options and options:
+                current = spec.default if spec.default in options else options[0]
+                st.session_state[spec.state_key] = current
+            st.selectbox(
+                spec.label,
+                options,
+                index=options.index(current) if current in options else 0,
+                key=spec.state_key,
+                help=spec.help or None,
+            )
+            continue
+        if spec.control == "multiselect":
+            options = list(spec.options)
+            current = st.session_state.get(spec.state_key)
+            default = current if isinstance(current, list) else []
+            st.multiselect(spec.label, options, default=default, key=spec.state_key, help=spec.help or None)
+            continue
+        if spec.control == "schedule":
+            st.checkbox(
+                spec.now_label,
+                value=bool(st.session_state.get(spec.now_state_key, False)),
+                key=spec.now_state_key,
+                help=spec.help or None,
+            )
+            if not st.session_state.get(spec.now_state_key):
+                st.text_input(spec.text_label, key=spec.text_state_key, help=spec.text_help or None)
+            continue
+        if spec.control == "checkbox":
+            st.checkbox(
+                spec.label,
+                value=bool(st.session_state.get(spec.state_key, spec.default or False)),
+                key=spec.state_key,
+                help=spec.help or None,
+            )
+            continue
+        if spec.control == "textarea":
+            st.text_area(spec.label, key=spec.state_key, help=spec.help or None)
+            continue
+        st.text_input(spec.label, key=spec.state_key, help=spec.help or None)

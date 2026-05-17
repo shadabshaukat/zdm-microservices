@@ -27,11 +27,13 @@ from streamlit_shared.response_file_payload import (
     validate_responsefile_read_response,
     validate_responsefile_write_response,
 )
-from streamlit_shared.wallet_payload import validate_credential_wallets_response
+from streamlit_shared.ui import render_diagnostics
+from streamlit_shared.wallet_payload import validate_credential_wallet_paths_response
 from streamlit_shared.response_file_sections import (
     render_responsefile_basics,
     render_responsefile_form_sections,
     render_responsefile_project_controls,
+    responsefile_unavailable_message,
 )
 
 
@@ -148,7 +150,7 @@ def render(ctx: AppContext) -> None:
             disabled=bool(wallet_contract_errors),
         )
         if submit_clicked and not selection.response_method_supported:
-            st.error(f"{selection.selected_migration_method} is not supported in this refactor yet.")
+            st.error(responsefile_unavailable_message(selection.selected_migration_method))
             submit_clicked = False
 
     with col_preview:
@@ -163,22 +165,19 @@ def render(ctx: AppContext) -> None:
     if submit_clicked:
         data = api_request("post", "/responsefiles", api_base, auth, payload=preview_request)
         if data is not None:
-            try:
-                validated = validate_responsefile_write_response(
-                    data,
-                    expected_project=project,
-                    expected_method=selection.selected_migration_method,
-                )
-            except ValueError as exc:
-                st.error(str(exc))
-                st.stop()
+            validated = validate_payload_or_stop(
+                data,
+                validate_responsefile_write_response,
+                expected_project=project,
+                expected_method=selection.selected_migration_method,
+            )
             st.success(validated["message"])
-            st.json(validated)
+            render_diagnostics(validated)
 
 
 def _load_wallet_map(api_base: str, auth: Any) -> Dict[str, str]:
-    wallets_resp = api_request_required("get", "/credential-wallets", api_base, auth)
-    return validate_payload_or_stop(wallets_resp, validate_credential_wallets_response)
+    wallets_resp = api_request_required("get", "/credential-wallets/paths", api_base, auth)
+    return validate_payload_or_stop(wallets_resp, validate_credential_wallet_paths_response)
 
 
 def _load_existing_rsp(project_name: str, api_base: str, auth: Any) -> Dict[str, Any] | None:
@@ -270,16 +269,12 @@ def _compile_preview_lines(
     )
     if preview_compile is None:
         return []
-    try:
-        return validate_responsefile_preview_response(
-            preview_compile,
-            expected_project=str(preview_request.get("project") or ""),
-            expected_method=str(preview_request.get("migration_method") or ""),
-        )
-    except ValueError as exc:
-        st.error(str(exc))
-        st.stop()
-    return []
+    return validate_payload_or_stop(
+        preview_compile,
+        validate_responsefile_preview_response,
+        expected_project=str(preview_request.get("project") or ""),
+        expected_method=str(preview_request.get("migration_method") or ""),
+    )
 
 
 def _render_responsefile_preview(
@@ -304,9 +299,9 @@ def _render_responsefile_preview(
                 with st.expander("Current saved response file", expanded=False):
                     st.code(existing_rsp.get("content", ""), language="ini")
         elif not response_method_supported:
-            st.error(f"{selected_migration_method} is not supported in this refactor yet.")
+            st.error(responsefile_unavailable_message(selected_migration_method))
         elif isinstance(existing_rsp, dict) and existing_rsp.get("status") == "success":
             st.caption("Current saved response file")
             st.code(existing_rsp.get("content", ""), language="ini")
         else:
-            st.error("Unable to compile response file preview from the backend contract.")
+            st.error("ZEUS could not build the response file preview. Check the required fields, then try again.")

@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Tuple
 from zdm_rules.catalog import MigrationProfile, get_profile, load_profiles
 from zdm_rules.environments import (
     project_environment_response_values,
-    project_logical_scenario_values,
+    project_rule_group_values,
 )
 from zdm_rules.responsefile import response_file_supported
 
@@ -18,10 +18,8 @@ ACTIVE_PROFILES = load_profiles()
 METHOD_OPTIONS_BY_TYPE: Dict[str, List[str]] = {}
 for profile in ACTIVE_PROFILES.values():
     METHOD_OPTIONS_BY_TYPE.setdefault(profile.migration_type, []).append(profile.method)
-MIGRATION_TYPE_OPTIONS = list(METHOD_OPTIONS_BY_TYPE) or ["Logical"]
+MIGRATION_TYPE_OPTIONS = list(METHOD_OPTIONS_BY_TYPE)
 REMAP_TYPE_OPTIONS = ["REMAP_TABLESPACE", "REMAP_SCHEMA", "REMAP_DATAFILE"]
-
-LOGICAL_PROFILE = get_profile("OFFLINE_LOGICAL")
 
 FIELD_STATE_KEY_OVERRIDES = {
     "DATAPUMPSETTINGS_METADATAREMAPS": "rf_remap_table",
@@ -29,6 +27,7 @@ FIELD_STATE_KEY_OVERRIDES = {
 }
 FIELD_HELP_KEYS = {
     "WALLET_TARGETADMIN": "WALLET_TARGETCONTAINER",
+    "INCLUDEOBJECTS": "include_schemas",
 }
 
 
@@ -55,20 +54,13 @@ class FieldSpec:
     help_key: str = ""
 
 
-@dataclass(frozen=True)
-class LogicalScenario:
-    migration_method: str = "OFFLINE_LOGICAL"
-    source_type: str = "ORACLE_DATABASE"
-    target_type: str = "ADB"
-
-
 def _profile_for_method(method: Any):
     return get_profile(method)
 
 
 def _field_spec(
     key: str,
-    profile=LOGICAL_PROFILE,
+    profile: MigrationProfile,
     required_context: Mapping[str, Any] | None = None,
 ) -> FieldSpec:
     config = profile.field(key)
@@ -96,7 +88,7 @@ def _field_spec(
 
 def _field_specs(
     keys: Iterable[str],
-    profile=LOGICAL_PROFILE,
+    profile: MigrationProfile,
     required_context: Mapping[str, Any] | None = None,
 ) -> Tuple[FieldSpec, ...]:
     return tuple(_field_spec(key, profile, required_context) for key in keys)
@@ -104,7 +96,7 @@ def _field_specs(
 
 def _section_field_specs(
     section: str,
-    profile=LOGICAL_PROFILE,
+    profile: MigrationProfile,
     required_context: Mapping[str, Any] | None = None,
 ) -> Tuple[FieldSpec, ...]:
     return _field_specs(profile.section_field_keys(section), profile, required_context)
@@ -129,6 +121,16 @@ def profile_medium_field_specs(
     return _field_specs(profile.medium_field_keys(medium), profile, context)
 
 
+def profile_medium_unsectioned_field_specs(
+    migration_method: Any,
+    medium: Any,
+    required_context: Mapping[str, Any] | None = None,
+) -> Tuple[FieldSpec, ...]:
+    profile = _profile_for_method(migration_method)
+    context = required_context or {"DATA_TRANSFER_MEDIUM": normalize_method(medium)}
+    return _field_specs(profile.medium_unsectioned_field_keys(medium), profile, context)
+
+
 def profile_medium_section_field_specs(
     migration_method: Any,
     medium: Any,
@@ -138,6 +140,26 @@ def profile_medium_section_field_specs(
     profile = _profile_for_method(migration_method)
     context = required_context or {"DATA_TRANSFER_MEDIUM": normalize_method(medium)}
     return _field_specs(profile.medium_section_field_keys(medium, section), profile, context)
+
+
+def profile_response_layout(migration_method: Any) -> List[Dict[str, Any]]:
+    profile = _profile_for_method(migration_method)
+    return profile.response_layout()
+
+
+def profile_section_label(migration_method: Any, section: Any) -> str:
+    profile = _profile_for_method(migration_method)
+    return profile.section_label(str(section))
+
+
+def profile_medium_section_names(migration_method: Any, medium: Any) -> List[str]:
+    profile = _profile_for_method(migration_method)
+    return profile.medium_section_names(medium)
+
+
+def profile_medium_fields_title(migration_method: Any) -> str:
+    profile = _profile_for_method(migration_method)
+    return profile.medium_fields_title()
 
 
 def profile_additional_default_rows(migration_method: Any) -> List[Dict[str, str]]:
@@ -189,6 +211,25 @@ def normalize_method(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def migration_method_label(value: Any) -> str:
+    normalized = normalize_method(value).replace("-", "_").replace(" ", "_")
+    labels = {
+        "OFFLINE_LOGICAL": "Logical Offline",
+        "ONLINE_LOGICAL": "Logical Online",
+        "OFFLINE_PHYSICAL": "Physical Offline",
+        "ONLINE_PHYSICAL": "Physical Online",
+    }
+    if normalized in labels:
+        return labels[normalized]
+    if normalized:
+        return normalized.replace("_", " ").title()
+    return "Unknown"
+
+
+def active_migration_method_options() -> Dict[str, str]:
+    return {migration_method_label(profile.method): profile.method for profile in ACTIVE_PROFILES.values()}
+
+
 def method_options(migration_type: str) -> List[str]:
     return list(METHOD_OPTIONS_BY_TYPE.get(migration_type, []))
 
@@ -202,67 +243,55 @@ def response_method_supported(migration_method: Any) -> bool:
     return response_file_supported(migration_method)
 
 
-def normalize_logical_scenario(scenario: LogicalScenario | None) -> LogicalScenario:
-    if scenario is None:
-        return LogicalScenario()
-    source_type = normalize_method(scenario.source_type) or "ORACLE_DATABASE"
-    target_type = normalize_method(scenario.target_type) or "ADB"
-    return LogicalScenario(
-        migration_method=normalize_method(scenario.migration_method) or "OFFLINE_LOGICAL",
-        source_type=source_type,
-        target_type=target_type,
-    )
-
-
-def logical_scenario_from_project(
+def migration_decision_input_values_from_project(
+    migration_method: Any,
     project: Any,
     connections: Any,
-    migration_method: Any = "OFFLINE_LOGICAL",
-) -> LogicalScenario:
-    values = project_logical_scenario_values(project, connections)
-    return normalize_logical_scenario(
-        LogicalScenario(
-            migration_method=normalize_method(migration_method) or "OFFLINE_LOGICAL",
-            source_type=values.get("source_type", "ORACLE_DATABASE"),
-            target_type=values.get("target_type", "ADB"),
-        )
-    )
+) -> Dict[str, Any]:
+    profile = _profile_for_method(migration_method)
+    values: Dict[str, Any] = {}
+    rule_group_refs: Dict[str, Any] = {}
+    for name, config in profile.decision_input_controls.items():
+        if "default" in config:
+            values[str(name)] = config.get("default")
+        if "from_rule_group" in config:
+            rule_group_refs[str(name)] = config.get("from_rule_group")
+    if rule_group_refs:
+        values.update(project_rule_group_values(project, connections, rule_group_refs))
+    return values
 
 
-def logical_scenario_context(scenario: LogicalScenario | None) -> Dict[str, Any]:
-    logical_scenario = normalize_logical_scenario(scenario)
-    return {
-        "source_type": logical_scenario.source_type,
-        "target_type": logical_scenario.target_type,
-    }
+def migration_decision_input_summary_parts(
+    migration_method: Any,
+    decision_input_values: Mapping[str, Any],
+) -> List[str]:
+    profile = _profile_for_method(migration_method)
+    parts: List[str] = []
+    for name in profile.decision_input_controls.keys():
+        value = decision_input_values.get(str(name))
+        if value in (None, ""):
+            continue
+        parts.append(migration_decision_input_option_label(migration_method, str(name), value))
+    return parts
 
 
-def _logical_scenario_control(name: str) -> Mapping[str, Any]:
-    return LOGICAL_PROFILE.scenario_control(name)
-
-
-def logical_scenario_label(name: str) -> str:
-    config = _logical_scenario_control(name)
-    return str(config.get("label") or name.replace("_", " ").title())
-
-
-def logical_scenario_options(name: str) -> List[str]:
-    config = _logical_scenario_control(name)
-    return [str(value) for value in config.get("options") or []]
-
-
-def logical_scenario_option_label(name: str, option: Any) -> str:
-    config = _logical_scenario_control(name)
+def migration_decision_input_option_label(migration_method: Any, name: str, option: Any) -> str:
+    profile = _profile_for_method(migration_method)
+    config = profile.decision_input_control(name)
     labels = config.get("labels") or {}
     if isinstance(labels, Mapping):
         return str(labels.get(normalize_method(option)) or labels.get(option) or option)
     return str(option)
 
 
-def logical_medium_options(scenario: LogicalScenario | None = None) -> List[MediumOption]:
+def migration_medium_options(
+    migration_method: Any,
+    context: Mapping[str, Any] | None = None,
+) -> List[MediumOption]:
+    profile = _profile_for_method(migration_method)
     options: List[MediumOption] = []
-    for option in LOGICAL_PROFILE.medium_options(logical_scenario_context(scenario)):
-        config = LOGICAL_PROFILE.medium(option.value)
+    for option in profile.medium_options(context or {}):
+        config = profile.medium(option.value)
         options.append(
             MediumOption(
                 value=option.value,
@@ -274,30 +303,14 @@ def logical_medium_options(scenario: LogicalScenario | None = None) -> List[Medi
     return options
 
 
-def logical_medium_values(scenario: LogicalScenario | None = None) -> List[str]:
-    return [option.value for option in logical_medium_options(scenario) if option.enabled]
+def migration_medium_values(migration_method: Any, context: Mapping[str, Any] | None = None) -> List[str]:
+    return [option.value for option in migration_medium_options(migration_method, context) if option.enabled]
 
 
-def logical_medium_guidance(medium: Any) -> str:
-    config = LOGICAL_PROFILE.medium(medium)
-    return str(config.get("hint") or "")
-
-
-def medium_options(
-    migration_type: str,
-    migration_method: Any = None,
-    platform_type: Any = None,
-    logical_scenario: LogicalScenario | None = None,
-) -> List[str]:
-    if migration_type == "Logical":
-        values = logical_medium_values(
-            logical_scenario
-            or LogicalScenario(migration_method=normalize_method(migration_method) or "OFFLINE_LOGICAL")
-        )
-        return values
-
+def migration_medium_guidance(migration_method: Any, medium: Any) -> str:
     profile = _profile_for_method(migration_method)
-    return [profile.default_medium]
+    config = profile.medium(medium)
+    return str(config.get("hint") or "")
 
 
 def same_method_copy_candidates(
@@ -404,16 +417,11 @@ def state_updates_from_rsp_content(content: str, wallet_map: Mapping[str, str]) 
     return updates
 
 
-def include_schemas_from_text(raw_text: str, migration_type: str) -> List[str]:
-    if migration_type != "Logical":
-        return []
+def include_schemas_from_text(raw_text: str) -> List[str]:
     return [schema.strip() for schema in str(raw_text or "").splitlines() if schema.strip()]
 
 
-def collect_metadata_remaps(rows: Any, migration_type: str) -> List[List[str]]:
-    if migration_type != "Logical":
-        return []
-
+def collect_metadata_remaps(rows: Any) -> List[List[str]]:
     remaps: List[List[str]] = []
     for row in _table_rows(rows):
         remap_type = _cell_text(row.get("type"))
@@ -452,8 +460,9 @@ def build_responsefile_payload(
     }
 
     profile = _profile_for_method(migration_method)
-    payload.update(profile.scenario_response_values(values))
-    _copy_present_keys(payload, values, profile.scenario_response_field_keys())
+    payload.update(profile.decision_input_response_values(values))
+    _copy_present_keys(payload, values, profile.decision_input_response_field_keys())
+    _copy_present_keys(payload, values, profile.derived_response_field_keys())
     common_keys = [
         key
         for key in profile.common_response_field_keys()
@@ -461,10 +470,9 @@ def build_responsefile_payload(
     ]
     _copy_profile_keys(profile, payload, values, common_keys)
     _copy_profile_keys(profile, payload, values, profile.medium_field_keys(medium))
-    if migration_type == "Logical":
-        include_schemas = values.get("include_schemas")
-        if include_schemas:
-            payload["include_schemas"] = include_schemas
+    include_schemas = values.get("include_schemas")
+    if include_schemas:
+        payload["include_schemas"] = include_schemas
 
     if remaps:
         payload["DATAPUMPSETTINGS_METADATAREMAPS"] = remaps
