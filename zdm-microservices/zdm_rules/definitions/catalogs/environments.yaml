@@ -5,13 +5,13 @@ environments:
   ORACLE_DATABASE:
     display:
       group: General
-      name: User-managed Oracle Database
+      name: Oracle Database
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: USER_MANAGED
       physical:
         target: NON_CLOUD
@@ -25,16 +25,16 @@ environments:
       physical_target:
         PLATFORM_TYPE: NON_CLOUD
 
-  ON_PREMISES_EXADATA_DATABASE_MACHINE:
+  ONPREM_EXADATA:
     display:
       group: On-premises
-      name: Oracle Exadata Database Machine
+      name: On-premises Exadata
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: NON_CLOUD
@@ -44,16 +44,16 @@ environments:
       physical_target:
         PLATFORM_TYPE: NON_CLOUD
 
-  ORACLE_DATABASE_APPLIANCE:
+  ODA:
     display:
       group: On-premises
-      name: Oracle Database Appliance (ODA)
+      name: Oracle Database Appliance
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: NON_CLOUD
@@ -65,7 +65,7 @@ environments:
       physical_target:
         PLATFORM_TYPE: NON_CLOUD
 
-  AMAZON_RDS_ORACLE:
+  AWS_RDS_ORACLE:
     display:
       group: Amazon Web Services
       name: Amazon RDS for Oracle
@@ -79,16 +79,16 @@ environments:
         SOURCEDATABASE_ENVIRONMENT_NAME: AMAZON
         SOURCEDATABASE_ENVIRONMENT_DBTYPE: RDS_ORACLE
 
-  OCI_BASE_DATABASE_SERVICE:
+  OCI_BASEDB:
     display:
       group: Oracle Cloud Infrastructure
-      name: Oracle Base Database Service (BaseDB / VMDB)
+      name: OCI BaseDB
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: VMDB
@@ -100,16 +100,16 @@ environments:
       physical_target:
         PLATFORM_TYPE: VMDB
 
-  OCI_EXADATA_DATABASE_SERVICE_DEDICATED:
+  OCI_EXADB_D:
     display:
       group: Oracle Cloud Infrastructure
-      name: Oracle Exadata Database Service on Dedicated Infrastructure (ExaDB-D / ExaCS)
+      name: OCI ExaDB-D
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: EXACS
@@ -119,16 +119,16 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  OCI_EXADATA_DATABASE_SERVICE_EXASCALE:
+  OCI_EXADB_XS:
     display:
       group: Oracle Cloud Infrastructure
-      name: Oracle Exadata Database Service on Exascale Infrastructure (ExaDB-XS / ExaCS)
+      name: OCI ExaDB-XS
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: EXACS
@@ -140,10 +140,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  OCI_AUTONOMOUS_AI_DATABASE_SERVERLESS:
+  OCI_ADB_S:
     display:
       group: Oracle Cloud Infrastructure
-      name: Oracle Autonomous AI Database Serverless (ADB-S)
+      name: OCI ADB-S
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -153,10 +153,10 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBS
 
-  OCI_AUTONOMOUS_AI_DATABASE_DEDICATED:
+  OCI_ADB_D:
     display:
       group: Oracle Cloud Infrastructure
-      name: Oracle Autonomous AI Database on Dedicated Exadata Infrastructure (ADB-D)
+      name: OCI ADB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -166,16 +166,16 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBD
 
-  EXADATA_CLOUD_AT_CUSTOMER:
+  EXADB_CC:
     display:
       group: Oracle Cloud@Customer
-      name: Oracle Exadata Database Service on Cloud@Customer (ExaCC)
+      name: ExaDB-C@C
     supports:
       source: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
       logical:
-        source: ORACLE_DATABASE
+        source: ORACLE
         target: CO_MANAGED
       physical:
         target: EXACC
@@ -185,10 +185,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACC
 
-  AUTONOMOUS_AI_DATABASE_ON_EXADATA_CLOUD_AT_CUSTOMER:
+  EXADB_CC_ADB_D:
     display:
       group: Oracle Cloud@Customer
-      name: Oracle Autonomous AI Database on Exadata Cloud@Customer (ADB-C@C)
+      name: ExaDB-C@C ADB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -198,10 +198,10 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBCC
 
-  ORACLE_AI_DATABASE_AZURE_EXADATA_DEDICATED:
+  ORACLEDB_AZURE_EXADB_D:
     display:
-      group: Oracle AI Database@Azure
-      name: Oracle Exadata Database Service on Dedicated Infrastructure (ExaDB-D / ExaCS / OracleDB@Azure)
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ExaDB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -217,10 +217,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  ORACLE_AI_DATABASE_AZURE_EXADATA_EXASCALE:
+  ORACLEDB_AZURE_EXADB_XS:
     display:
-      group: Oracle AI Database@Azure
-      name: Oracle Exadata Database Service on Exascale Infrastructure (ExaDB-XS / OracleDB@Azure)
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ExaDB-XS
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -236,10 +236,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  ORACLE_AI_DATABASE_AZURE_BASE_DATABASE:
+  ORACLEDB_AZURE_BASEDB:
     display:
-      group: Oracle AI Database@Azure
-      name: Oracle Base Database Service (BaseDB / VMDB / OracleDB@Azure)
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - BaseDB
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -253,10 +253,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: VMDB
 
-  ORACLE_AI_DATABASE_AZURE_AUTONOMOUS_AI_DATABASE_SERVERLESS:
+  ORACLEDB_AZURE_ADB_S:
     display:
-      group: Oracle AI Database@Azure
-      name: Oracle Autonomous AI Database Serverless (ADB-S / OracleDB@Azure)
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ADB-S
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -266,10 +266,10 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBS
 
-  ORACLE_AI_DATABASE_AZURE_AUTONOMOUS_AI_DATABASE_DEDICATED:
+  ORACLEDB_AZURE_ADB_D:
     display:
-      group: Oracle AI Database@Azure
-      name: Oracle Autonomous AI Database on Dedicated Exadata Infrastructure (ADB-D / OracleDB@Azure)
+      group: Oracle Database@Azure
+      name: Oracle Database@Azure - ADB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -279,10 +279,10 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBD
 
-  ORACLE_AI_DATABASE_GOOGLE_CLOUD_EXADATA_DEDICATED:
+  ORACLEDB_GCP_EXADB_D:
     display:
-      group: Oracle AI Database@Google Cloud
-      name: Oracle Exadata Database Service on Dedicated Infrastructure (ExaDB-D / ExaCS / OracleDB@Google Cloud)
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ExaDB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -298,10 +298,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  ORACLE_AI_DATABASE_GOOGLE_CLOUD_EXADATA_EXASCALE:
+  ORACLEDB_GCP_EXADB_XS:
     display:
-      group: Oracle AI Database@Google Cloud
-      name: Oracle Exadata Database Service on Exascale Infrastructure (ExaDB-XS / OracleDB@Google Cloud)
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ExaDB-XS
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -317,10 +317,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  ORACLE_AI_DATABASE_GOOGLE_CLOUD_BASE_DATABASE:
+  ORACLEDB_GCP_BASEDB:
     display:
-      group: Oracle AI Database@Google Cloud
-      name: Oracle Base Database Service (BaseDB / VMDB / OracleDB@Google Cloud)
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - BaseDB
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -334,10 +334,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: VMDB
 
-  ORACLE_AI_DATABASE_GOOGLE_CLOUD_AUTONOMOUS_AI_DATABASE_SERVERLESS:
+  ORACLEDB_GCP_ADB_S:
     display:
-      group: Oracle AI Database@Google Cloud
-      name: Oracle Autonomous AI Database Serverless (ADB-S / OracleDB@Google Cloud)
+      group: Oracle Database@Google Cloud
+      name: Oracle Database@Google Cloud - ADB-S
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:
@@ -347,10 +347,10 @@ environments:
       logical_target:
         TARGETDATABASE_DBTYPE: ADBS
 
-  ORACLE_AI_DATABASE_AWS_EXADATA_DEDICATED:
+  ORACLEDB_AWS_EXADB_D:
     display:
-      group: Oracle AI Database@AWS
-      name: Oracle Exadata Database Service on Dedicated Infrastructure (ExaDB-D / ExaCS / OracleDB@AWS)
+      group: Oracle Database@AWS
+      name: Oracle Database@AWS - ExaDB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL]
     rule_groups:
@@ -366,10 +366,10 @@ environments:
       physical_target:
         PLATFORM_TYPE: EXACS
 
-  ORACLE_AI_DATABASE_AWS_AUTONOMOUS_AI_DATABASE_DEDICATED:
+  ORACLEDB_AWS_ADB_D:
     display:
-      group: Oracle AI Database@AWS
-      name: Oracle Autonomous AI Database on Dedicated Exadata Infrastructure (ADB-D / OracleDB@AWS)
+      group: Oracle Database@AWS
+      name: Oracle Database@AWS - ADB-D
     supports:
       target: [OFFLINE_LOGICAL, ONLINE_LOGICAL]
     rule_groups:

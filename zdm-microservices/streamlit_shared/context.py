@@ -14,4 +14,8 @@ class AppContext:
     default_password: str
     username: str
     password: str
-    entering_response: bool = False
+    section: str = ""
+    previous_section: str | None = None
+
+    def entering(self, section_key: str) -> bool:
+        return self.section == section_key and self.previous_section != section_key

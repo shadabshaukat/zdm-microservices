@@ -60,7 +60,6 @@ with st.sidebar:
     st.caption(f"User: {st.session_state.get('username','') or 'not set'}")
 
 previous_section = st.session_state.get("_active_section")
-entering_response = section == "response" and previous_section != "response"
 st.session_state["_active_section"] = section
 
 if section != "settings" and not api_base:
@@ -75,7 +74,8 @@ ctx = AppContext(
     default_password=default_password,
     username=username,
     password=password,
-    entering_response=entering_response,
+    section=section,
+    previous_section=previous_section,
 )
 
 PAGE_RENDERERS = {

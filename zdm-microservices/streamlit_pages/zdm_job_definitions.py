@@ -286,7 +286,6 @@ def render(ctx: AppContext) -> None:
             if data:
                 validated = validate_payload_or_stop(data, validate_run_job_response)
                 st.success("Job submitted.")
-                st.session_state["last_job_submission_result"] = validated
                 if validated.get("job_id"):
                     st.session_state["last_job_id"] = validated["job_id"]
 

@@ -6,11 +6,11 @@ decision_inputs:
     source_group:
       label: Logical source group
       from_rule_group: logical.source
-      options: [ORACLE_DATABASE, AWS_RDS_ORACLE]
+      options: [ORACLE, AWS_RDS_ORACLE]
       labels:
-        ORACLE_DATABASE: Oracle Database source
-        AWS_RDS_ORACLE: AWS RDS Oracle source
-      default: ORACLE_DATABASE
+        ORACLE: Oracle Database
+        AWS_RDS_ORACLE: AWS RDS Oracle
+      default: ORACLE
     target_group:
       label: Logical target group
       from_rule_group: logical.target

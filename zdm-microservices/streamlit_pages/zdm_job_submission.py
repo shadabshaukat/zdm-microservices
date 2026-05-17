@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import pandas as pd
+from typing import Any, Mapping, MutableMapping
+
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
@@ -16,11 +17,26 @@ from streamlit_shared.job_payload import (
     validate_saved_job_delete_response,
     validate_saved_jobs_response,
 )
-from streamlit_shared.ui import st_df_safe
+
+RUNJOB_SUBMISSION_RESULT_KEY = "runjob_last_submission_result"
+RUNJOB_SUBMISSION_NAME_KEY = "runjob_last_submission_name"
+RUNJOB_PROGRESS_KEYS = (
+    "runjob_show_current_progress",
+    RUNJOB_SUBMISSION_RESULT_KEY,
+    RUNJOB_SUBMISSION_NAME_KEY,
+    "runjob_current_job_autorefresh",
+    "runjob_current_job_should_refresh",
+    "runjob_current_job_query_status",
+    "runjob_current_job_query_job_id",
+)
+
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
+
+    if ctx.entering("runjob"):
+        clear_current_job_progress(st.session_state)
 
     st.subheader("ZDM Job Submission")
     st.caption("Pick a saved job definition, view it, preview the command, and run it.")
@@ -50,6 +66,7 @@ def render(ctx: AppContext) -> None:
                         validated = validate_payload_or_stop(data, validate_run_job_response)
                         job_id = validated.get("job_id")
                         script_path = validated.get("script_path")
+                        st.session_state["runjob_show_current_progress"] = True
                         if job_id:
                             st.success(f"Submitted saved job '{saved_sel}' as ZDM job {job_id}.")
                             st.session_state["last_job_id"] = job_id
@@ -64,8 +81,8 @@ def render(ctx: AppContext) -> None:
                             )
                         if script_path:
                             st.caption(f"Run script: {script_path}")
-                        st.session_state["last_job_submission_result"] = validated
-                        st.session_state["last_job_submission_name"] = saved_sel
+                        st.session_state[RUNJOB_SUBMISSION_RESULT_KEY] = validated
+                        st.session_state[RUNJOB_SUBMISSION_NAME_KEY] = saved_sel
     with c4:
         if st.button("Delete", key="runjob_delete_saved_btn", width='stretch'):
             if saved_sel != "-- Select saved job --":
@@ -78,13 +95,7 @@ def render(ctx: AppContext) -> None:
     view_job_name = st.session_state.pop("runjob_view_job", "")
     if view_job_name and view_job_name in saved_jobs_resp:
         vjob = saved_jobs_resp.get(view_job_name, {})
-        df_view = pd.DataFrame(
-            [
-                {"Field": k, "Value": "" if v is None else v}
-                for k, v in vjob.items()
-            ]
-        )
-        st_df_safe(df_view, hide_index=True, width='stretch')
+        _render_saved_job_definition(view_job_name, vjob)
         # Get live command preview via dry_run
         try:
             payload_preview = job_payload_from_saved_job(vjob, dry_run=True)
@@ -103,15 +114,14 @@ def render(ctx: AppContext) -> None:
     # -----------------------------
     # Current job progress (full width)
     # -----------------------------
-    st.markdown("### Current job progress")
-    last_submission_result = st.session_state.get("last_job_submission_result")
-    if not last_submission_result:
-        st.info("No job submitted yet.")
+    last_submission_result = st.session_state.get(RUNJOB_SUBMISSION_RESULT_KEY)
+    if not should_show_current_job_progress(st.session_state):
         return
 
+    st.markdown("### Current job progress")
     validated_submission = validate_payload_or_stop(last_submission_result, validate_run_job_response)
     submitted_job_id = (validated_submission.get("job_id") or "").strip()
-    submitted_name = st.session_state.get("last_job_submission_name") or "saved job"
+    submitted_name = st.session_state.get(RUNJOB_SUBMISSION_NAME_KEY) or "saved job"
     script_path = validated_submission.get("script_path")
     if not submitted_job_id:
         st.warning("No ZDM job ID is available for the latest submission.")
@@ -171,6 +181,77 @@ def render(ctx: AppContext) -> None:
         if auto_refresh_active and not hasattr(st, "fragment"):
             st.caption("Auto-refresh requires a newer Streamlit version (st.fragment).")
         _render_current_job(should_poll=False)
+
+
+def should_show_current_job_progress(session_state: Mapping[str, Any]) -> bool:
+    return bool(
+        session_state.get("runjob_show_current_progress")
+        and session_state.get(RUNJOB_SUBMISSION_RESULT_KEY)
+    )
+
+
+def clear_current_job_progress(session_state: MutableMapping[str, Any]) -> None:
+    for key in RUNJOB_PROGRESS_KEYS:
+        session_state.pop(key, None)
+
+
+def _render_saved_job_definition(name: str, job: Mapping[str, Any]) -> None:
+    st.markdown("#### Saved job definition")
+    with st.container(border=True):
+        st.markdown(f"**{name}**")
+        cols = st.columns(3)
+        with cols[0]:
+            st.caption("Project")
+            st.write(job.get("project") or "-")
+        with cols[1]:
+            st.caption("Run type")
+            st.write(job.get("run_type") or "-")
+        with cols[2]:
+            st.caption("Response file")
+            st.write(job.get("rsp") or "-")
+
+        _render_definition_lines(
+            "ZDM CLI arguments",
+            [
+                (f"-{key}", value)
+                for key, value in (job.get("job_parameters") or {}).items()
+                if value not in (None, "", [])
+            ],
+            expanded=True,
+        )
+        _render_definition_lines(
+            "Run controls",
+            [
+                (key, job.get(key))
+                for key in [
+                    "advisor_mode",
+                    "flow_control",
+                    "flow_phase",
+                    "genfixup",
+                    "ignore",
+                    "schedule",
+                    "listphases",
+                    "custom_args",
+                ]
+                if job.get(key) not in (None, "", [])
+            ],
+            expanded=False,
+        )
+
+
+def _render_definition_lines(title: str, rows: list[tuple[str, Any]], *, expanded: bool) -> None:
+    with st.expander(title, expanded=expanded):
+        if not rows:
+            st.caption("None")
+            return
+        for label, value in rows:
+            st.text(f"{label}: {_display_value(value)}")
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    return str(value)
 
 
 def _stop_on_saved_job_error(exc: ValueError) -> None:

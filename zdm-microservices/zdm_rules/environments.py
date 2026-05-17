@@ -58,12 +58,7 @@ def db_connection_type_label(value: Any) -> str:
     env = connection_environment(value)
     display = env.get("display") if isinstance(env.get("display"), dict) else {}
     name = str(display.get("name") or value or "")
-    group = str(display.get("group") or "")
-
-    label = name
-    if group:
-        label = f"{label} ({group})"
-    return label
+    return name
 
 
 def db_connection_type_options_for_role(role: Any) -> tuple[str, ...]:

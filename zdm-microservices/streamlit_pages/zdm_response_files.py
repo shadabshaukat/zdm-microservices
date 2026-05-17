@@ -51,7 +51,7 @@ def render(ctx: AppContext) -> None:
             st.session_state["rf_project"] = SELECT_PROJECT
             st.session_state["rf_active_project"] = ""
 
-    if ctx.entering_response:
+    if ctx.entering("response"):
         clear_response_form_state(include_project=True)
 
     header_l, header_r = st.columns([4.5, 1.5], vertical_alignment="center")
