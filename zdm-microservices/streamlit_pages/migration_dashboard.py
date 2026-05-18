@@ -7,6 +7,7 @@ import streamlit as st
 
 from streamlit_shared.api_client import api_request_required, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_jobs_dashboard_response
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_data import (
     KPI_COLUMNS,
@@ -14,6 +15,7 @@ from streamlit_shared.job_data import (
     zdm_job_kpis,
     zdm_job_records_to_dataframe,
 )
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import (
     monitor_job_url,
     render_diagnostics,
@@ -24,8 +26,12 @@ def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
-    st.subheader("Migration Dashboard")
-    st.caption("Fleet view of ZEUS migration jobs across projects and databases.")
+    render_page_header(
+        "Execute & Observe",
+        "Fleet Dashboard",
+        "Review fleet-level migration status across projects, databases, and ZDM jobs.",
+    )
+    render_workflow_back_button()
 
     refresh_col, meta_col = st.columns([0.18, 0.82], vertical_alignment="center")
     with refresh_col:

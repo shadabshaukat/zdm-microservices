@@ -12,12 +12,14 @@ from streamlit_shared.api_payload import (
     validate_joblog_read_response,
     validate_joblogs_response,
 )
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_progress import (
     query_result_should_auto_refresh,
     render_job_progress,
     should_auto_refresh_status,
 )
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import query_param
 
 
@@ -35,8 +37,12 @@ def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
-    st.subheader("ZDM Job Monitoring")
-    st.caption("Look up job status and tail generated logs for ZDM runs.")
+    render_page_header(
+        "Execute & Observe",
+        "ZDM Job Monitoring",
+        "Monitor ZDM job status, phases, result files, and generated logs.",
+    )
+    render_workflow_back_button()
 
     deep_link_job_id = query_param("job_id").strip()
     deep_link_view = "Logs" if query_param("view").lower() == "logs" else "Latest result"

@@ -12,6 +12,7 @@ from streamlit_pages import (
     db_connections,
     db_discovery,
     db_wallets_credentials,
+    guided_workflow,
     migration_dashboard,
     projects,
     zdm_job_definitions,
@@ -20,14 +21,18 @@ from streamlit_pages import (
     zdm_response_files,
     zeus_settings,
 )
+from streamlit_shared.console_layout import (
+    render_console_header,
+    render_console_shell_styles,
+    render_sidebar_brand,
+)
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_navigation, select_section
 
 
 APP_LONG_NAME = "ZEUS – ZDM Enqueue URL Services"
-st.set_page_config(page_title=APP_LONG_NAME, layout="wide")
-st.title(APP_LONG_NAME)
-st.caption("A lightweight UI on top of ZDM CLI via your FastAPI microservice.")
+st.set_page_config(page_title=APP_LONG_NAME, page_icon="ZEUS-logo.png", layout="wide")
+render_console_shell_styles()
 
 
 def _load_zeus_auth_defaults():
@@ -54,6 +59,7 @@ password = st.session_state.get("password", "")
 auth = HTTPBasicAuth(username, password)
 
 section = select_section()
+render_sidebar_brand()
 render_navigation(section)
 with st.sidebar:
     st.caption(f"API: {st.session_state.get('api_base','') or 'not set'}")
@@ -62,7 +68,9 @@ with st.sidebar:
 previous_section = st.session_state.get("_active_section")
 st.session_state["_active_section"] = section
 
-if section != "settings" and not api_base:
+render_console_header(api_base=api_base, username=username)
+
+if section not in {"settings", "workflow"} and not api_base:
     st.warning("Please configure ZEUS Settings first.")
     st.stop()
 
@@ -79,6 +87,7 @@ ctx = AppContext(
 )
 
 PAGE_RENDERERS = {
+    "workflow": guided_workflow.render,
     "settings": zeus_settings.render,
     "connections": db_connections.render,
     "wallet": db_wallets_credentials.render,

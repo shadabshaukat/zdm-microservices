@@ -11,6 +11,7 @@ from streamlit_shared.api_payload import (
     validate_projects_response,
     validate_run_job_response,
 )
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import is_adb_database_type
 from streamlit_shared.job_form import (
@@ -26,6 +27,7 @@ from streamlit_shared.job_form import (
     profile_job_section_field_specs,
     wallet_name_for_path,
 )
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.job_payload import (
     compact_job_payload,
     validate_saved_job_copy_response,
@@ -40,8 +42,12 @@ def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
-    st.subheader("ZDM Job Definitions")
-    st.caption("Define a job submission. Job name is fixed per project + run type; saved job definitions are listed on the ZDM Job Submission page.")
+    render_page_header(
+        "Design Migration",
+        "ZDM Job Definitions",
+        "Save reusable ZDM command definitions by project and run type before submission.",
+    )
+    render_workflow_back_button()
 
     projects_resp = validate_payload_or_stop(
         api_request_required("get", "/projects", api_base, auth),
