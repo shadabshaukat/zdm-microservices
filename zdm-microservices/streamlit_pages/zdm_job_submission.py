@@ -6,12 +6,14 @@ import streamlit as st
 
 from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_job_query_response, validate_run_job_response
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_progress import (
     query_result_should_auto_refresh,
     render_job_progress,
     should_auto_refresh_status,
 )
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.job_payload import (
     job_payload_from_saved_job,
     validate_saved_job_delete_response,
@@ -38,8 +40,12 @@ def render(ctx: AppContext) -> None:
     if ctx.entering("runjob"):
         clear_current_job_progress(st.session_state)
 
-    st.subheader("ZDM Job Submission")
-    st.caption("Pick a saved job definition, view it, preview the command, and run it.")
+    render_page_header(
+        "Execute & Observe",
+        "ZDM Job Submission",
+        "Pick a saved job definition, inspect the command, and run it.",
+    )
+    render_workflow_back_button()
 
     saved_jobs_raw = api_request_required("get", "/saved-jobs", api_base, auth)
     saved_jobs_resp = validate_payload_or_stop(saved_jobs_raw, validate_saved_jobs_response)

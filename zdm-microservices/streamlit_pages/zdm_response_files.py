@@ -15,7 +15,9 @@ from streamlit_shared.api_payload import (
     validate_dbconnections_response,
     validate_projects_response,
 )
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.response_file_form import (
     SELECT_PROJECT,
     SELECT_WALLET,
@@ -54,21 +56,23 @@ def render(ctx: AppContext) -> None:
     if ctx.entering("response"):
         clear_response_form_state(include_project=True)
 
-    header_l, header_r = st.columns([4.5, 1.5], vertical_alignment="center")
-    with header_l:
-        st.markdown("## ZDM Response Files")
-    with header_r:
-        projects_resp = validate_payload_or_stop(
-            api_request_required("get", "/projects", api_base, auth),
-            validate_projects_response,
-        )
-        project_names = list(projects_resp.keys())
-        project = st.selectbox(
-            "Project",
-            [SELECT_PROJECT] + project_names,
-            key="rf_project",
-            label_visibility="collapsed",
-        )
+    render_page_header(
+        "Design Migration",
+        "ZDM Response Files",
+        "Create or update the response file for a selected migration project.",
+    )
+    render_workflow_back_button()
+
+    projects_resp = validate_payload_or_stop(
+        api_request_required("get", "/projects", api_base, auth),
+        validate_projects_response,
+    )
+    project_names = list(projects_resp.keys())
+    project = st.selectbox(
+        "Project",
+        [SELECT_PROJECT] + project_names,
+        key="rf_project",
+    )
 
     if project == SELECT_PROJECT:
         st.session_state["rf_active_project"] = ""

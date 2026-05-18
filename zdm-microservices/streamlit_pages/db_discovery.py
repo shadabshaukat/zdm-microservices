@@ -13,12 +13,14 @@ from streamlit_shared.api_payload import (
     validate_discovery_latest_response,
     validate_discovery_response,
 )
+from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.db_auth import (
     render_db_auth_inputs_for_method,
     render_db_auth_method,
     validate_db_auth_selection,
 )
+from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.response_file_form import active_migration_method_options
 from streamlit_shared.ui import render_diagnostics, st_df_safe
 from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
@@ -27,8 +29,12 @@ def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
-    st.subheader("DB Discovery")
-    st.caption("Run a snapshot (schemas, tablespaces, directories, NLS, timezone) against a saved connection.")
+    render_page_header(
+        "Database Setup",
+        "DB Discovery",
+        "Run source discovery to retrieve database details needed for ZDM configuration.",
+    )
+    render_workflow_back_button()
 
     conns = validate_payload_or_stop(
         api_request_required("get", "/dbconnections", api_base, auth),
