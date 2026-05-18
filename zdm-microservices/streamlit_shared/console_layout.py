@@ -9,8 +9,9 @@ from typing import Iterator
 import streamlit as st
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ZEUS_LOGO = REPO_ROOT / "ZEUS-logo.png"
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+ASSET_DIR = SERVICE_ROOT / "assets"
+ZEUS_LOGO = ASSET_DIR / "ZEUS-logo.png"
 
 
 def render_console_shell_styles() -> None:
@@ -344,7 +345,10 @@ def render_console_shell_styles() -> None:
             padding: 0 !important;
         }
 
-        .stButton > button {
+        .stButton > button,
+        .stFormSubmitButton > button,
+        [data-testid="stBaseButton-primary"],
+        [data-testid="stBaseButton-secondary"] {
             min-height: 42px;
             border-radius: var(--zeus-radius);
             font-weight: 700;
@@ -352,41 +356,93 @@ def render_console_shell_styles() -> None:
         }
 
         .stButton > button[kind="primary"],
-        .stButton > button[data-testid="baseButton-primary"] {
+        .stButton > button[data-testid="baseButton-primary"],
+        .stFormSubmitButton > button[kind="primary"],
+        .stFormSubmitButton > button[data-testid="baseButton-primary"],
+        [data-testid="stBaseButton-primary"],
+        [data-testid="baseButton-primary"] {
             border: 1px solid var(--zeus-primary) !important;
             background: var(--zeus-primary) !important;
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="primary"] *,
-        .stButton > button[data-testid="baseButton-primary"] * {
+        .stButton > button[data-testid="baseButton-primary"] *,
+        .stFormSubmitButton > button[kind="primary"] *,
+        .stFormSubmitButton > button[data-testid="baseButton-primary"] *,
+        [data-testid="stBaseButton-primary"] *,
+        [data-testid="baseButton-primary"] * {
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="primary"]:hover,
-        .stButton > button[data-testid="baseButton-primary"]:hover {
+        .stButton > button[data-testid="baseButton-primary"]:hover,
+        .stFormSubmitButton > button[kind="primary"]:hover,
+        .stFormSubmitButton > button[data-testid="baseButton-primary"]:hover,
+        [data-testid="stBaseButton-primary"]:hover,
+        [data-testid="baseButton-primary"]:hover {
             border-color: var(--zeus-primary-dark) !important;
             background: var(--zeus-primary-dark) !important;
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="secondary"],
-        .stButton > button[data-testid="baseButton-secondary"] {
+        .stButton > button[data-testid="baseButton-secondary"],
+        .stFormSubmitButton > button[kind="secondary"],
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"],
+        [data-testid="stBaseButton-secondary"],
+        [data-testid="baseButton-secondary"] {
             border: 1px solid var(--zeus-border-strong) !important;
             background: #FFFFFF !important;
             color: var(--zeus-primary-dark) !important;
         }
 
         .stButton > button[kind="secondary"] *,
-        .stButton > button[data-testid="baseButton-secondary"] * {
+        .stButton > button[data-testid="baseButton-secondary"] *,
+        .stFormSubmitButton > button[kind="secondary"] *,
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"] *,
+        [data-testid="stBaseButton-secondary"] *,
+        [data-testid="baseButton-secondary"] * {
             color: var(--zeus-primary-dark) !important;
         }
 
         .stButton > button[kind="secondary"]:hover,
-        .stButton > button[data-testid="baseButton-secondary"]:hover {
+        .stButton > button[data-testid="baseButton-secondary"]:hover,
+        .stFormSubmitButton > button[kind="secondary"]:hover,
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"]:hover,
+        [data-testid="stBaseButton-secondary"]:hover,
+        [data-testid="baseButton-secondary"]:hover {
             border-color: var(--zeus-primary) !important;
             background: var(--zeus-primary-soft) !important;
             color: var(--zeus-primary-dark) !important;
+        }
+
+        [data-baseweb="tag"] {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
+            color: #FFFFFF !important;
+        }
+
+        [data-baseweb="tag"] *,
+        [data-baseweb="tag"] svg {
+            color: #FFFFFF !important;
+            fill: #FFFFFF !important;
+        }
+
+        [data-baseweb="radio"] [aria-checked="true"],
+        [data-testid="stRadio"] [aria-checked="true"],
+        [data-testid="stRadio"] label:has(input:checked) > div:first-child,
+        label[data-baseweb="radio"]:has(input:checked) > div:first-child {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
+        }
+
+        [data-baseweb="radio"] [aria-checked="true"] *,
+        [data-testid="stRadio"] [aria-checked="true"] *,
+        [data-testid="stRadio"] label:has(input:checked) > div:first-child *,
+        label[data-baseweb="radio"]:has(input:checked) > div:first-child * {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
         }
 
         [data-testid="stSidebar"] .stButton > button {
@@ -473,6 +529,15 @@ def render_console_shell_styles() -> None:
         .stTabs [aria-selected="true"] {
             color: var(--zeus-primary-dark) !important;
             background: rgba(239, 246, 255, 0.88);
+        }
+
+        .stTabs [data-baseweb="tab-highlight"] {
+            background-color: var(--zeus-primary) !important;
+        }
+
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            border-bottom-color: var(--zeus-primary) !important;
+            box-shadow: inset 0 -2px 0 var(--zeus-primary) !important;
         }
 
         hr {

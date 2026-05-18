@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import streamlit as st
 from requests.auth import HTTPBasicAuth
@@ -31,7 +32,9 @@ from streamlit_shared.navigation import render_navigation, select_section
 
 
 APP_LONG_NAME = "ZEUS – ZDM Enqueue URL Services"
-st.set_page_config(page_title=APP_LONG_NAME, page_icon="ZEUS-logo.png", layout="wide")
+APP_DIR = Path(__file__).resolve().parent
+ZEUS_PAGE_ICON = APP_DIR / "assets" / "ZEUS-logo.png"
+st.set_page_config(page_title=APP_LONG_NAME, page_icon=str(ZEUS_PAGE_ICON), layout="wide")
 render_console_shell_styles()
 
 
