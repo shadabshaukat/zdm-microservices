@@ -1,5 +1,5 @@
 #!/bin/bash
-# Purpose: prepare ZEUS runtime and start backend + Streamlit. Do not source.
+# Purpose: prepare ZEUS runtime and start backend. React is served by FastAPI. Do not source.
 set -euo pipefail
 
 # Required base variables
@@ -9,7 +9,6 @@ set -euo pipefail
 
 APP_DIR="$HOME_DIR/zdm-microservices"
 RESTART_MICRO="$HOME_DIR/restart_microservice.sh"
-RESTART_UI="$HOME_DIR/restart_streamlit.sh"
 RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-$ZEUS_BASE/zeus.env}"
 AUTH_FILE="${ZEUS_AUTH_FILE:-$ZEUS_BASE/.zeus.auth.env}"
 ZEUS_LOG="${ZEUS_LOG:-$ZEUS_BASE/log}"
@@ -20,13 +19,10 @@ AUTH_TEMPLATE="$APP_DIR/.zeus.auth.env.sample"
 mkdir -p "$ZEUS_BASE" "$ZEUS_LOG" "$ZEUS_CERT_DIR"
 log() { echo "$(date +"%Y-%m-%d %H:%M:%S") - $*" | tee -a "$ZEUS_LOG/debug.log"; }
 
-# Ensure helper scripts exist
-for f in "$RESTART_MICRO" "$RESTART_UI"; do
-  if [[ ! -x "$f" ]]; then
-    log "ERROR: required script missing or not executable: $f"
-    exit 1
-  fi
-done
+if [[ ! -x "$RESTART_MICRO" ]]; then
+  log "ERROR: required script missing or not executable: $RESTART_MICRO"
+  exit 1
+fi
 
 # Prepare env file
 mkdir -p "$(dirname "$RUNTIME_ENV")"
@@ -75,17 +71,50 @@ if [[ ! -f "$cert_path" || ! -f "$key_path" ]]; then
   chmod 644 "$cert_path" || true
 fi
 
+build_react_frontend() {
+  local frontend_dir="$APP_DIR/frontend"
+  local frontend_log="$ZEUS_LOG/frontend_build.log"
+  local dist_index="$frontend_dir/dist/index.html"
+
+  if [[ ! -d "$frontend_dir" ]]; then
+    log "ERROR: React frontend directory missing: $frontend_dir"
+    exit 1
+  fi
+  if [[ ! -f "$frontend_dir/package-lock.json" ]]; then
+    log "ERROR: package-lock.json missing in React frontend directory"
+    exit 1
+  fi
+  if ! command -v npm >/dev/null 2>&1; then
+    log "ERROR: npm not found; cannot build React frontend"
+    exit 1
+  fi
+
+  log "Building React frontend..."
+  if ! (
+    cd "$frontend_dir"
+    npm ci
+    npm run build
+  ) >> "$frontend_log" 2>&1; then
+    log "ERROR: React frontend build failed; see $frontend_log"
+    exit 1
+  fi
+
+  if [[ ! -f "$dist_index" ]]; then
+    log "ERROR: React frontend build did not produce $dist_index"
+    exit 1
+  fi
+  log "React frontend build complete."
+}
+
+build_react_frontend
+
 log "Starting ZEUS backend..."
 if ! "$RESTART_MICRO" >> "$ZEUS_LOG/microservice.log" 2>&1; then
   log "ERROR: backend start script failed"
   exit 1
 fi
 
-log "Starting ZEUS Streamlit..."
-if ! "$RESTART_UI" >> "$ZEUS_LOG/streamlit.log" 2>&1; then
-  log "ERROR: Streamlit start script failed"
-  exit 1
-fi
+log "React frontend is served by ZEUS backend."
 
 check_pid_running() {
   local pidfile="$1"
@@ -105,12 +134,11 @@ check_pid_running() {
 }
 
 check_pid_running "$ZEUS_LOG/microservice.pid" "backend"
-check_pid_running "$ZEUS_LOG/streamlit.pid" "streamlit"
 
 echo "healthy $(date '+%Y-%m-%dT%H:%M:%S%z')" > "$ZEUS_LOG/.zeus_finished"
 log "ZEUS startup complete."
 
 # Keep PID1 alive if this is the entrypoint
 if [[ "$$" -eq 1 ]]; then
-  exec tail -f "$ZEUS_LOG/microservice.log" "$ZEUS_LOG/streamlit.log" 2>/dev/null
+  exec tail -f "$ZEUS_LOG/microservice.log" 2>/dev/null
 fi

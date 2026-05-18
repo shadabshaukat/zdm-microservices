@@ -108,21 +108,49 @@ fi
 echo
 echo "Waiting for ZEUS startup..."
 
+zdm_ready=false
 for _ in {1..30}; do
   if podman ps --filter "name=^${CONTAINER_NAME}$" --format '{{.Status}}' 2>/dev/null | grep -q '^Up'; then
     if podman exec "$CONTAINER_NAME" /bin/bash -lc 'zdmservice status 2>/dev/null | grep -q "Running:[[:space:]]*true"' 2>/dev/null; then
+      zdm_ready=true
       break
     fi
   fi
   sleep 1
 done
 
-for _ in {1..20}; do
-  if podman exec "$CONTAINER_NAME" /bin/bash -lc "ps -ef | grep -E 'python|streamlit' | grep -v grep" >/dev/null 2>&1; then
+if [[ "$zdm_ready" != true ]]; then
+  echo "Error: ZDM service did not become ready in container '$CONTAINER_NAME'." >&2
+  podman logs --tail 120 "$CONTAINER_NAME" 2>/dev/null || true
+  exit 1
+fi
+
+zeus_ready=false
+for _ in {1..120}; do
+  if podman exec "$CONTAINER_NAME" /bin/bash -lc '
+    set -e
+    ZEUS_BASE="${ZEUS_BASE:-/u01/data/zeus}"
+    RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-$ZEUS_BASE/zeus.env}"
+    if [[ -f "$RUNTIME_ENV" ]]; then
+      set -a
+      source "$RUNTIME_ENV"
+      set +a
+    fi
+    ZEUS_PORT="${ZEUS_PORT:-8001}"
+    ZEUS_CERT_DIR="${ZEUS_CERT_DIR:-$ZEUS_BASE/certs}"
+    curl --cacert "$ZEUS_CERT_DIR/zeus.crt" -skf "https://127.0.0.1:${ZEUS_PORT}/health" >/dev/null
+  ' >/dev/null 2>&1; then
+    zeus_ready=true
     break
   fi
   sleep 1
 done
+
+if [[ "$zeus_ready" != true ]]; then
+  echo "Error: ZEUS health endpoint did not become ready in container '$CONTAINER_NAME'." >&2
+  podman logs --tail 120 "$CONTAINER_NAME" 2>/dev/null || true
+  exit 1
+fi
 
 echo
 echo "=== systemd unit ==="
@@ -139,4 +167,16 @@ podman logs --tail 80 "$CONTAINER_NAME" 2>/dev/null || true
 echo
 echo "=== quick checks ==="
 podman exec "$CONTAINER_NAME" /bin/bash -lc 'zdmservice status' 2>/dev/null || true
-podman exec "$CONTAINER_NAME" /bin/bash -lc "ps -ef | grep -E 'python|streamlit' | grep -v grep" 2>/dev/null || true
+podman exec "$CONTAINER_NAME" /bin/bash -lc "ps -ef | grep -E 'zdm-microservices/main.py' | grep -v grep" 2>/dev/null || true
+podman exec "$CONTAINER_NAME" /bin/bash -lc '
+  ZEUS_BASE="${ZEUS_BASE:-/u01/data/zeus}"
+  RUNTIME_ENV="${ZEUS_RUNTIME_ENV:-$ZEUS_BASE/zeus.env}"
+  if [[ -f "$RUNTIME_ENV" ]]; then
+    set -a
+    source "$RUNTIME_ENV"
+    set +a
+  fi
+  ZEUS_PORT="${ZEUS_PORT:-8001}"
+  ZEUS_CERT_DIR="${ZEUS_CERT_DIR:-$ZEUS_BASE/certs}"
+  curl --cacert "$ZEUS_CERT_DIR/zeus.crt" -skf "https://127.0.0.1:${ZEUS_PORT}/health"
+' 2>/dev/null || true

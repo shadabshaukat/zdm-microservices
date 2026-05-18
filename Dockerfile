@@ -2,7 +2,7 @@
 FROM oraclelinux:8 AS base
 
 RUN yum -y install unzip oraclelinux-developer-release-el8 && \
-    yum -y install curl openssh-clients python3.11 python3.11-pip && \
+    yum -y install curl openssh-clients python3.11 python3.11-pip nodejs npm && \
     yum clean all
 
 WORKDIR /tmp
@@ -114,4 +114,4 @@ RUN python3.11 -m pip install --user --upgrade typing_extensions && \
 
 CMD ["/bin/bash", "-c", "/home/zdmuser/start_zdm.sh && exec /home/zdmuser/start_zeus.sh"]
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=20 CMD [ -f "${ZEUS_BASE}/log/.zeus_finished" ] && curl --cacert "${ZEUS_BASE}/certs/zeus.crt" -skf "https://127.0.0.1:${STREAMLIT_PORT:-8000}/" || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=180s --retries=20 CMD [ -f "${ZEUS_BASE}/log/.zeus_finished" ] && curl --cacert "${ZEUS_BASE}/certs/zeus.crt" -skf "https://127.0.0.1:${ZEUS_PORT:-8001}/" || exit 1

@@ -50,10 +50,8 @@ stop_pid_file() {
 log "ZEUS graceful shutdown started"
 
 stop_pid_file "microservice" "$ZEUS_LOG/microservice.pid"
-stop_pid_file "streamlit" "$ZEUS_LOG/streamlit.pid"
 
 pkill -f "$HOME_DIR/zdm-microservices/main.py" 2>/dev/null || true
-pkill -f "$HOME_DIR/zdm-microservices/streamlit_app.py" 2>/dev/null || true
 
 # Clear health sentinel so next start must recreate it
 rm -f "$ZEUS_LOG/.zeus_finished" || true

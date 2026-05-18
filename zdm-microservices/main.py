@@ -7,8 +7,10 @@
 ############################################################
 """
 
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 try:
     from pydantic import ConfigDict
@@ -30,6 +32,10 @@ try:
     from .backend_auth import load_users_hashed, AuthConfigError  # package-style
 except ImportError:
     from backend_auth import load_users_hashed, AuthConfigError  # script-style
+try:
+    from .frontend_metadata import build_frontend_metadata  # package-style
+except ImportError:
+    from frontend_metadata import build_frontend_metadata  # script-style
 try:
     from .zdm_rules.catalog import get_profile  # package-style
     from .zdm_rules.environments import (
@@ -87,6 +93,31 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     if not stored or not pwd_context.verify(credentials.password, stored):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return credentials.username
+
+@app.get("/metadata/frontend")
+def frontend_metadata(
+    project: Optional[str] = None,
+    migration_method: Optional[str] = None,
+    medium: Optional[str] = None,
+    run_type: Optional[str] = None,
+    username: str = Depends(verify_credentials),
+):
+    try:
+        project_name = str(project or "").strip()
+        projects = load_projects() if project_name else None
+        connections = load_connections() if project_name else None
+        return build_frontend_metadata(
+            projects=projects,
+            connections=connections,
+            project=project,
+            migration_method=migration_method,
+            medium=medium,
+            run_type=run_type,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'")) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 def ensure_zdm_home():
     if not os.getenv("ZDM_HOME"):
@@ -2767,6 +2798,54 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
     except subprocess.CalledProcessError as e:
         error_message = f"Create Credential failed with return code {e.returncode}: {e.stderr}"
         raise HTTPException(status_code=500, detail=error_message)
+
+
+FRONTEND_DIST = Path(__file__).resolve().parent / "frontend" / "dist"
+FRONTEND_INDEX = FRONTEND_DIST / "index.html"
+FRONTEND_API_PREFIXES = {
+    "assets",
+    "metadata",
+    "projects",
+    "dbconnections",
+    "responsefiles",
+    "responsefile",
+    "saved-jobs",
+    "jobs",
+    "jobids",
+    "joblogs",
+    "job-logs",
+    "query",
+    "runjob",
+    "credential-wallets",
+    "tls-wallets",
+    "wallets",
+    "health",
+    "version",
+}
+
+if FRONTEND_DIST.exists():
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
+
+    def _frontend_index_response():
+        if not FRONTEND_INDEX.exists():
+            raise HTTPException(status_code=404, detail="Frontend build not found")
+        return FileResponse(str(FRONTEND_INDEX))
+
+    @app.get("/")
+    def frontend_index():
+        return _frontend_index_response()
+
+    @app.api_route(
+        "/{frontend_path:path}",
+        methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    )
+    def frontend_spa(frontend_path: str, request: Request):
+        first_segment = frontend_path.split("/", 1)[0]
+        if first_segment in FRONTEND_API_PREFIXES or request.method not in {"GET", "HEAD"}:
+            raise HTTPException(status_code=404, detail="API route not found")
+        return _frontend_index_response()
 
 if __name__ == "__main__":
     import uvicorn
