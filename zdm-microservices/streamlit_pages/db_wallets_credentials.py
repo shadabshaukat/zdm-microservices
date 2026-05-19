@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
+from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_cli_command_response
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
@@ -18,14 +18,19 @@ def render(ctx: AppContext) -> None:
     auth = ctx.auth
 
     render_page_header(
-        "Database Setup",
+        "Prepare Databases",
         "DB Wallets & Credentials",
         "Create reusable DB credential wallets for ZDM jobs and database discovery tasks.",
     )
     render_workflow_back_button()
 
-    wallets_resp = api_request_required("get", "/credential-wallets", api_base, auth)
-    wallet_rows = validate_payload_or_stop(wallets_resp, validate_credential_wallet_rows)
+    wallets_resp = api_request("get", "/credential-wallets", api_base, auth, quiet=True)
+    wallets_unavailable = wallets_resp is None
+    wallet_rows = (
+        validate_payload_or_stop(wallets_resp, validate_credential_wallet_rows)
+        if wallets_resp is not None
+        else []
+    )
     wallet_names = [row["name"] for row in wallet_rows]
     wallet_credentials = {row["name"]: row.get("credential_username") for row in wallet_rows}
 
@@ -94,7 +99,9 @@ def render(ctx: AppContext) -> None:
                         st.rerun()
 
     with page_panel("Saved wallets"):
-        if wallet_rows:
+        if wallets_unavailable:
+            st.error("ZEUS backend is not reachable. Saved wallets cannot be loaded.")
+        elif wallet_rows:
             wallet_table_rows = [
                 {
                     "Wallet": row["name"],

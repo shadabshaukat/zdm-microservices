@@ -9,8 +9,9 @@ from typing import Iterator
 import streamlit as st
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-ZEUS_LOGO = REPO_ROOT / "ZEUS-logo.png"
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+ASSET_DIR = SERVICE_ROOT / "assets"
+ZEUS_LOGO = ASSET_DIR / "ZEUS-logo.png"
 
 
 def render_console_shell_styles() -> None:
@@ -18,21 +19,22 @@ def render_console_shell_styles() -> None:
         """
         <style>
         :root {
-            --zeus-primary: #3B82F6;
-            --zeus-primary-dark: #2563EB;
+            --zeus-primary: #2563EB;
+            --zeus-primary-mid: #3B82F6;
+            --zeus-primary-dark: #1D4ED8;
             --zeus-primary-soft: #EFF6FF;
-            --zeus-background: #F0F4FF;
+            --zeus-background: #F6F8FB;
             --zeus-surface: #FFFFFF;
-            --zeus-surface-subtle: #F8FBFF;
-            --zeus-border: #DBEAFE;
-            --zeus-border-strong: #93C5FD;
+            --zeus-surface-subtle: #F9FAFB;
+            --zeus-border: #E2E8F0;
+            --zeus-border-strong: #A7B6CA;
             --zeus-text: #1E293B;
             --zeus-text-muted: #64748B;
             --zeus-success: #10B981;
             --zeus-warning: #F59E0B;
             --zeus-error: #EF4444;
-            --zeus-shadow-subtle: 0 1px 3px rgba(30, 41, 59, 0.06), 0 1px 2px rgba(30, 41, 59, 0.04);
-            --zeus-shadow-medium: 0 4px 6px rgba(30, 41, 59, 0.07), 0 2px 4px rgba(30, 41, 59, 0.05);
+            --zeus-shadow-subtle: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+            --zeus-shadow-medium: 0 8px 18px rgba(15, 23, 42, 0.07), 0 2px 6px rgba(15, 23, 42, 0.04);
             --zeus-radius: 8px;
             --zeus-mono: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
             --zeus-sans: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -81,10 +83,11 @@ def render_console_shell_styles() -> None:
 
         [data-testid="stSidebarContent"] {
             padding-top: 0.25rem;
+            min-height: 100vh;
         }
 
         [data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
-            gap: 0.48rem;
+            gap: clamp(0.48rem, 0.85vh, 0.72rem);
         }
 
         [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
@@ -94,15 +97,37 @@ def render_console_shell_styles() -> None:
         }
 
         .zeus-nav-group-label {
-            margin: 0.78rem 0 0 0;
-            padding: 0 0 0.42rem 0;
-            color: var(--zeus-text);
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin: clamp(0.78rem, 1.15vh, 1.05rem) 0 0 0;
+            padding: 0.08rem 0 0.46rem 0;
+            border-bottom: 1px solid var(--zeus-border);
+            color: var(--zeus-text-muted);
             font-family: var(--zeus-sans);
             font-size: 0.72rem;
             font-weight: 700;
             line-height: 1.2;
             letter-spacing: 0.04em;
             text-transform: uppercase;
+        }
+
+        .zeus-nav-group-label::before {
+            width: 3px;
+            height: 13px;
+            border-radius: 999px;
+            background: #CBD5E1;
+            content: "";
+        }
+
+        .zeus-nav-group-label--active {
+            border-bottom-color: #BFDBFE;
+            color: var(--zeus-text);
+        }
+
+        .zeus-nav-group-label--active::before {
+            background: var(--zeus-primary);
         }
 
         [data-testid="stSidebar"] [data-testid="stElementContainer"]:has(.zeus-nav-group-label) {
@@ -267,6 +292,31 @@ def render_console_shell_styles() -> None:
             background: var(--zeus-warning);
         }
 
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]),
+        [data-testid="stException"] {
+            border: 1px solid #FDE68A !important;
+            border-radius: var(--zeus-radius) !important;
+            background: #FFFBEB !important;
+            color: #92400E !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) [data-testid="stAlertContentError"],
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) [data-testid="stMarkdownContainer"],
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) p,
+        [data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) svg,
+        [data-testid="stException"] *,
+        [data-testid="stException"] svg {
+            color: #92400E !important;
+            fill: #92400E !important;
+        }
+
+        [data-testid="stException"] pre,
+        [data-testid="stException"] code {
+            color: var(--zeus-text) !important;
+            background: #FFFFFF !important;
+        }
+
         .zeus-page-header {
             margin: 0 0 clamp(1rem, 2vh, 1.25rem) 0;
             padding-bottom: clamp(0.95rem, 1.8vh, 1.15rem);
@@ -344,7 +394,10 @@ def render_console_shell_styles() -> None:
             padding: 0 !important;
         }
 
-        .stButton > button {
+        .stButton > button,
+        .stFormSubmitButton > button,
+        [data-testid="stBaseButton-primary"],
+        [data-testid="stBaseButton-secondary"] {
             min-height: 42px;
             border-radius: var(--zeus-radius);
             font-weight: 700;
@@ -352,50 +405,114 @@ def render_console_shell_styles() -> None:
         }
 
         .stButton > button[kind="primary"],
-        .stButton > button[data-testid="baseButton-primary"] {
+        .stButton > button[data-testid="baseButton-primary"],
+        .stFormSubmitButton > button[kind="primary"],
+        .stFormSubmitButton > button[data-testid="baseButton-primary"],
+        [data-testid="stBaseButton-primary"],
+        [data-testid="baseButton-primary"] {
             border: 1px solid var(--zeus-primary) !important;
             background: var(--zeus-primary) !important;
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="primary"] *,
-        .stButton > button[data-testid="baseButton-primary"] * {
+        .stButton > button[data-testid="baseButton-primary"] *,
+        .stFormSubmitButton > button[kind="primary"] *,
+        .stFormSubmitButton > button[data-testid="baseButton-primary"] *,
+        [data-testid="stBaseButton-primary"] *,
+        [data-testid="baseButton-primary"] * {
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="primary"]:hover,
-        .stButton > button[data-testid="baseButton-primary"]:hover {
+        .stButton > button[data-testid="baseButton-primary"]:hover,
+        .stFormSubmitButton > button[kind="primary"]:hover,
+        .stFormSubmitButton > button[data-testid="baseButton-primary"]:hover,
+        [data-testid="stBaseButton-primary"]:hover,
+        [data-testid="baseButton-primary"]:hover {
             border-color: var(--zeus-primary-dark) !important;
             background: var(--zeus-primary-dark) !important;
             color: #FFFFFF !important;
         }
 
         .stButton > button[kind="secondary"],
-        .stButton > button[data-testid="baseButton-secondary"] {
+        .stButton > button[data-testid="baseButton-secondary"],
+        .stFormSubmitButton > button[kind="secondary"],
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"],
+        [data-testid="stBaseButton-secondary"],
+        [data-testid="baseButton-secondary"] {
             border: 1px solid var(--zeus-border-strong) !important;
             background: #FFFFFF !important;
             color: var(--zeus-primary-dark) !important;
         }
 
         .stButton > button[kind="secondary"] *,
-        .stButton > button[data-testid="baseButton-secondary"] * {
+        .stButton > button[data-testid="baseButton-secondary"] *,
+        .stFormSubmitButton > button[kind="secondary"] *,
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"] *,
+        [data-testid="stBaseButton-secondary"] *,
+        [data-testid="baseButton-secondary"] * {
             color: var(--zeus-primary-dark) !important;
         }
 
         .stButton > button[kind="secondary"]:hover,
-        .stButton > button[data-testid="baseButton-secondary"]:hover {
+        .stButton > button[data-testid="baseButton-secondary"]:hover,
+        .stFormSubmitButton > button[kind="secondary"]:hover,
+        .stFormSubmitButton > button[data-testid="baseButton-secondary"]:hover,
+        [data-testid="stBaseButton-secondary"]:hover,
+        [data-testid="baseButton-secondary"]:hover {
             border-color: var(--zeus-primary) !important;
             background: var(--zeus-primary-soft) !important;
             color: var(--zeus-primary-dark) !important;
         }
 
+        [data-baseweb="tag"] {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
+            color: #FFFFFF !important;
+        }
+
+        [data-baseweb="tag"] *,
+        [data-baseweb="tag"] svg {
+            color: #FFFFFF !important;
+            fill: #FFFFFF !important;
+        }
+
+        [data-baseweb="radio"] [aria-checked="true"],
+        [data-testid="stRadio"] [aria-checked="true"],
+        [data-testid="stRadio"] label:has(input:checked) > div:first-child,
+        label[data-baseweb="radio"]:has(input:checked) > div:first-child {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
+        }
+
+        [data-baseweb="radio"] [aria-checked="true"] *,
+        [data-testid="stRadio"] [aria-checked="true"] *,
+        [data-testid="stRadio"] label:has(input:checked) > div:first-child *,
+        label[data-baseweb="radio"]:has(input:checked) > div:first-child * {
+            border-color: var(--zeus-primary) !important;
+            background-color: var(--zeus-primary) !important;
+        }
+
         [data-testid="stSidebar"] .stButton > button {
+            align-items: center !important;
+            justify-content: flex-start !important;
             min-height: 36px;
-            padding: 6px 12px;
+            padding: 6px 14px;
             border-radius: 8px;
             font-size: 0.88rem;
             font-weight: 580;
             line-height: 1.15;
+            text-align: left !important;
+        }
+
+        [data-testid="stSidebar"] .stButton > button [data-testid="stMarkdownContainer"],
+        [data-testid="stSidebar"] .stButton > button div,
+        [data-testid="stSidebar"] .stButton > button p {
+            display: block;
+            flex: 1 1 auto;
+            width: 100%;
+            text-align: left !important;
         }
 
         [data-testid="stSidebar"] .stButton > button[kind="secondary"],
@@ -416,6 +533,26 @@ def render_console_shell_styles() -> None:
         [data-testid="stSidebar"] .stButton > button[kind="secondary"]:hover *,
         [data-testid="stSidebar"] .stButton > button[data-testid="baseButton-secondary"]:hover * {
             color: var(--zeus-text) !important;
+        }
+
+        [data-testid="stDataFrame"],
+        [data-testid="stDataEditor"] {
+            overflow: hidden;
+            border: 1px solid var(--zeus-border) !important;
+            border-radius: 10px !important;
+            background: #FFFFFF !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid="stDataFrame"] [role="grid"],
+        [data-testid="stDataEditor"] [role="grid"] {
+            border-color: var(--zeus-border) !important;
+            background: #FFFFFF !important;
+        }
+
+        [data-testid="stDataFrame"] canvas,
+        [data-testid="stDataEditor"] canvas {
+            background: #FFFFFF !important;
         }
 
         div[data-baseweb="input"] > div,
@@ -473,6 +610,15 @@ def render_console_shell_styles() -> None:
         .stTabs [aria-selected="true"] {
             color: var(--zeus-primary-dark) !important;
             background: rgba(239, 246, 255, 0.88);
+        }
+
+        .stTabs [data-baseweb="tab-highlight"] {
+            background-color: var(--zeus-primary) !important;
+        }
+
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            border-bottom-color: var(--zeus-primary) !important;
+            box-shadow: inset 0 -2px 0 var(--zeus-primary) !important;
         }
 
         hr {

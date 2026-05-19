@@ -47,11 +47,20 @@ def render(ctx: AppContext) -> None:
     )
     render_workflow_back_button()
 
-    saved_jobs_raw = api_request_required("get", "/saved-jobs", api_base, auth)
-    saved_jobs_resp = validate_payload_or_stop(saved_jobs_raw, validate_saved_jobs_response)
+    saved_jobs_raw = api_request("get", "/saved-jobs", api_base, auth, quiet=True)
+    saved_jobs_unavailable = saved_jobs_raw is None
+    saved_jobs_resp = (
+        validate_payload_or_stop(saved_jobs_raw, validate_saved_jobs_response)
+        if saved_jobs_raw is not None
+        else {}
+    )
     saved_job_names = ["-- Select saved job --"] + list(saved_jobs_resp.keys())
 
+    if st.session_state.get("runjob_saved_select") not in saved_job_names:
+        st.session_state["runjob_saved_select"] = "-- Select saved job --"
     saved_sel = st.selectbox("Saved job definitions", saved_job_names, key="runjob_saved_select")
+    if saved_jobs_unavailable:
+        st.error("ZEUS backend is not reachable. Saved job definitions cannot be loaded.")
     c2, c3, c4 = st.columns([0.34, 0.33, 0.33])
     with c2:
         if st.button("View", key="runjob_view_saved_btn", width='stretch'):

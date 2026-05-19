@@ -5,7 +5,7 @@ from typing import List
 
 import streamlit as st
 
-from streamlit_shared.api_client import api_request_required, validate_payload_or_stop
+from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
 from streamlit_shared.api_payload import (
     validate_job_ids_response,
     validate_job_query_response,
@@ -72,9 +72,11 @@ def render(ctx: AppContext) -> None:
                 st.session_state["jobs_manual_id"] = val
             st.session_state["jobs_saved_pick"] = ""
 
-        job_ids_list = validate_payload_or_stop(
-            api_request_required("get", "/jobs/ids", api_base, auth),
-            validate_job_ids_response,
+        job_ids_resp = api_request("get", "/jobs/ids", api_base, auth, quiet=True)
+        job_ids_list = (
+            validate_payload_or_stop(job_ids_resp, validate_job_ids_response)
+            if job_ids_resp is not None
+            else []
         )
 
         row = st.columns([0.55, 0.25, 0.20], vertical_alignment="bottom")
@@ -90,7 +92,10 @@ def render(ctx: AppContext) -> None:
                         on_change=_apply_saved_jobid,
                     )
             else:
-                st.caption("No recent Job IDs")
+                if job_ids_resp is None:
+                    st.caption("Recent Job IDs unavailable")
+                else:
+                    st.caption("No recent Job IDs")
         with row[2]:
             query_clicked = st.button("Query", type="primary", width='stretch')
 

@@ -5,7 +5,6 @@ import streamlit as st
 
 from streamlit_shared.api_client import (
     api_request,
-    api_request_required,
     api_upload_file,
     validate_payload_or_stop,
 )
@@ -40,7 +39,7 @@ def render(ctx: AppContext) -> None:
     auth = ctx.auth
 
     render_page_header(
-        "Database Setup",
+        "Prepare Databases",
         "DB Connections",
         "Create and maintain source and target DB connection records for ZDM configuration.",
     )
@@ -159,11 +158,16 @@ def render(ctx: AppContext) -> None:
 
     with col_table:
         with page_panel("Saved Connections"):
-            conns = validate_payload_or_stop(
-                api_request_required("get", "/dbconnections", api_base, auth),
-                validate_dbconnections_response,
-            )
-            if not conns:
+            raw_conns = api_request("get", "/dbconnections", api_base, auth, quiet=True)
+            conns = {}
+            if raw_conns is not None:
+                conns = validate_payload_or_stop(raw_conns, validate_dbconnections_response)
+
+            if raw_conns is None:
+                st.error(
+                    "ZEUS backend is not reachable. Check ZEUS Settings and make sure the backend service is running."
+                )
+            elif not conns:
                 st.info("No connections saved yet.")
             else:
                 rows = []
@@ -243,34 +247,39 @@ def render(ctx: AppContext) -> None:
                                 if resp:
                                     validate_payload_or_stop(resp, validate_dbconnection_delete_response)
                                     deleted += 1
-                            st.success(f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list.")
+                            st.success(
+                                f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list."
+                            )
 
         with page_panel("Test Connection"):
             last_saved = st.session_state.get("last_saved_conn", "-- Select --")
             options = ["-- Select --"] + list(conns.keys())
             default_idx = options.index(last_saved) if last_saved in options else 0
             test_name = st.selectbox("Connection", options, index=default_idx)
+            test_clicked = st.button("Test", type="primary")
+
+            st.divider()
             auth_method = render_db_auth_method(key_prefix="conn_test")
             wallet_rows = []
             if auth_method == "credential_wallet":
-                wallet_rows = validate_payload_or_stop(
-                    api_request_required("get", "/credential-wallets/names", api_base, auth),
-                    validate_credential_wallet_names_response,
-                )
+                wallet_resp = api_request("get", "/credential-wallets/names", api_base, auth, quiet=True)
+                if wallet_resp is not None:
+                    wallet_rows = validate_payload_or_stop(wallet_resp, validate_credential_wallet_names_response)
             auth_payload = render_db_auth_inputs_for_method(
                 key_prefix="conn_test",
                 method=auth_method,
                 wallet_rows=wallet_rows,
                 show_credential_user=False,
             )
-            test_clicked = st.button("Test", type="primary")
 
             if test_clicked:
                 if test_name == "-- Select --":
                     st.error("Please select a connection.")
                 else:
                     cinfo = conns.get(test_name, {})
-                    wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get("allow_tls_without_wallet")
+                    wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get(
+                        "allow_tls_without_wallet"
+                    )
                     if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
                         st.error("Upload a TLS wallet for this connection before testing.")
                         st.stop()

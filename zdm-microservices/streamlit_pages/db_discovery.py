@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
+from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import (
     validate_dbconnections_response,
     validate_discovery_latest_response,
@@ -30,15 +30,17 @@ def render(ctx: AppContext) -> None:
     auth = ctx.auth
 
     render_page_header(
-        "Database Setup",
+        "Prepare Databases",
         "DB Discovery",
         "Run source discovery to retrieve database details needed for ZDM configuration.",
     )
     render_workflow_back_button()
 
-    conns = validate_payload_or_stop(
-        api_request_required("get", "/dbconnections", api_base, auth),
-        validate_dbconnections_response,
+    conns_resp = api_request("get", "/dbconnections", api_base, auth, quiet=True)
+    conns = (
+        validate_payload_or_stop(conns_resp, validate_dbconnections_response)
+        if conns_resp is not None
+        else {}
     )
     conn_names = ["-- Select connection --"] + list(conns.keys())
     discovery_migration_types = active_migration_method_options()
@@ -47,6 +49,8 @@ def render(ctx: AppContext) -> None:
 
     col_sel, col_mt = st.columns([0.6, 0.4], vertical_alignment="bottom")
     with col_sel:
+        if st.session_state.get("disc_conn") not in conn_names:
+            st.session_state["disc_conn"] = "-- Select connection --"
         selected_conn = st.selectbox("Connection", conn_names, key="disc_conn")
     with col_mt:
         selected_migration_label = st.selectbox("Migration type", list(discovery_migration_types.keys()), key="disc_mt")
@@ -54,10 +58,9 @@ def render(ctx: AppContext) -> None:
     auth_method = render_db_auth_method(key_prefix="disc")
     wallet_rows = []
     if auth_method == "credential_wallet":
-        wallet_rows = validate_payload_or_stop(
-            api_request_required("get", "/credential-wallets/names", api_base, auth),
-            validate_credential_wallet_names_response,
-        )
+        wallet_resp = api_request("get", "/credential-wallets/names", api_base, auth, quiet=True)
+        if wallet_resp is not None:
+            wallet_rows = validate_payload_or_stop(wallet_resp, validate_credential_wallet_names_response)
     auth_payload = render_db_auth_inputs_for_method(
         key_prefix="disc",
         method=auth_method,
@@ -194,22 +197,24 @@ def render(ctx: AppContext) -> None:
 
     if selected_conn != "-- Select connection --":
         if cache_key not in st.session_state:
-            latest_payload = api_request_required(
+            latest_payload = api_request(
                 "get",
                 f"/dbconnections/{selected_conn}/discovery/latest",
                 api_base,
                 auth,
+                quiet=True,
             )
-            latest_snapshot = validate_payload_or_stop(
-                latest_payload,
-                validate_discovery_latest_response,
-            )
-            if latest_snapshot is not None:
-                st.session_state[cache_key] = latest_snapshot
-                st.session_state[cache_file_key] = latest_payload.get("file")
-                tsd = parse_ts_from_filename(latest_payload.get("file"))
-                if tsd:
-                    st.session_state[cache_tsdisp_key] = tsd
+            if latest_payload is not None:
+                latest_snapshot = validate_payload_or_stop(
+                    latest_payload,
+                    validate_discovery_latest_response,
+                )
+                if latest_snapshot is not None:
+                    st.session_state[cache_key] = latest_snapshot
+                    st.session_state[cache_file_key] = latest_payload.get("file")
+                    tsd = parse_ts_from_filename(latest_payload.get("file"))
+                    if tsd:
+                        st.session_state[cache_tsdisp_key] = tsd
         snapshot = st.session_state.get(cache_key)
         snapshot_source = "cached" if snapshot is not None else ""
 
