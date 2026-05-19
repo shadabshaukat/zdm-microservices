@@ -17,7 +17,6 @@ from streamlit_shared.response_file_form import (
     include_schemas_from_text,
     migration_medium_guidance,
     migration_medium_options,
-    migration_decision_input_summary_parts,
     migration_decision_input_values_from_project,
     migration_method_label,
     migration_type_for_method,
@@ -109,14 +108,7 @@ def render_responsefile_basics(
         st.stop()
     migration_method = selected_migration_method
     st.session_state["rf_migration_method"] = selected_migration_method
-    st.markdown(
-        " ".join(
-            [
-                f"`Migration method: {migration_method_label(selected_migration_method)}`",
-                f"`Profile: {selected_migration_method}`",
-            ]
-        )
-    )
+    st.markdown(f"`Migration method: {migration_method_label(selected_migration_method)}`")
     supported = response_method_supported(selected_migration_method)
     if not supported:
         st.error(responsefile_unavailable_message(selected_migration_method))
@@ -126,7 +118,6 @@ def render_responsefile_basics(
         project_record,
         connections_resp,
     )
-    _render_decision_input_summary(selected_migration_method, decision_input_values)
 
     derived_response_values = project_environment_response_values(
         project_record,
@@ -171,14 +162,6 @@ def render_responsefile_basics(
         medium=medium,
         response_method_supported=supported,
     )
-
-
-def _render_decision_input_summary(migration_method: str, decision_input_values: Mapping[str, Any]) -> None:
-    parts = migration_decision_input_summary_parts(migration_method, decision_input_values)
-    if not parts:
-        return
-    separator = " to " if len(parts) == 2 else " / "
-    st.caption("Migration path: " + separator.join(parts))
 
 
 def _render_medium_notes(

@@ -102,7 +102,7 @@ def _validate_rule(source_name: str, method: str, section_key: str, rule: Any) -
     if not isinstance(compare, dict):
         raise RuntimeError(f"{method}.{section_key}.{rule_id}.compare is required")
     operator = str(compare.get("operator") or "").strip()
-    if operator not in {"equals", "set_difference", "required", "numeric_min", "numeric_max"}:
+    if operator not in {"equals", "set_difference", "required", "numeric_min", "numeric_max", "target_gte_source"}:
         raise RuntimeError(f"{source_name}: unsupported operator {operator} in {rule_id}")
     if operator != "required":
         if not str(compare.get("source_path") or "").strip() or not str(compare.get("target_path") or "").strip():
@@ -144,6 +144,8 @@ def _evaluate_rule(
         return [_evaluate_required(rule_id, rule, source, target)]
     if operator in {"numeric_min", "numeric_max"}:
         return [_evaluate_numeric(rule_id, rule, source, target)]
+    if operator == "target_gte_source":
+        return [_evaluate_target_gte_source(rule_id, rule, source, target)]
     raise ValueError(f"Unsupported discovery comparison operator: {operator}")
 
 
@@ -254,6 +256,26 @@ def _evaluate_numeric(
         else source_num <= threshold and target_num <= threshold
     )
     if passed:
+        return _row(rule_id, rule, source_value, target_value, "passed")
+    outcome = rule.get("on_fail") if isinstance(rule.get("on_fail"), Mapping) else {}
+    return _row(rule_id, rule, source_value, target_value, str(outcome.get("status") or "difference"), outcome)
+
+
+def _evaluate_target_gte_source(
+    rule_id: str,
+    rule: Mapping[str, Any],
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> dict[str, Any]:
+    compare = rule["compare"]
+    source_value = _extract_path(source, str(compare["source_path"]))
+    target_value = _extract_path(target, str(compare["target_path"]))
+    source_num = _to_float(source_value)
+    target_num = _to_float(target_value)
+    if source_num is None or target_num is None:
+        outcome = rule.get("on_missing") if isinstance(rule.get("on_missing"), Mapping) else {}
+        return _row(rule_id, rule, source_value, target_value, str(outcome.get("status") or "not_returned"), outcome)
+    if target_num >= source_num:
         return _row(rule_id, rule, source_value, target_value, "passed")
     outcome = rule.get("on_fail") if isinstance(rule.get("on_fail"), Mapping) else {}
     return _row(rule_id, rule, source_value, target_value, str(outcome.get("status") or "difference"), outcome)

@@ -110,11 +110,11 @@ methods:
             compare:
               source_path: timezone.VERSION
               target_path: timezone.VERSION
-              operator: equals
+              operator: target_gte_source
             on_fail:
               status: readiness_issue
               severity: medium
-              message: Source and target timezone file versions differ.
+              message: Target timezone file version must be greater than or equal to source timezone file version.
               guidance: Review timezone compatibility and application timezone behavior before migration.
 
       profiles:
