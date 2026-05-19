@@ -8,6 +8,7 @@ from streamlit_shared.api_payload import validate_cli_command_response
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_workflow_back_button
+from streamlit_shared.ui import native_table_height
 from streamlit_shared.wallet_payload import (
     validate_credential_wallet_delete_response,
     validate_credential_wallet_rows,
@@ -117,6 +118,7 @@ def render(ctx: AppContext) -> None:
                     hide_index=True,
                     num_rows="fixed",
                     width="stretch",
+                    height=native_table_height(len(editor_rows)),
                     disabled=["Wallet", "Credential user", "Status"],
                     column_config={
                         "Wallet": st.column_config.TextColumn("Wallet", pinned=True),

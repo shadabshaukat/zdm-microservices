@@ -28,7 +28,7 @@ from streamlit_shared.db_types import (
     is_adb_database_type,
 )
 from streamlit_shared.navigation import render_workflow_back_button
-from streamlit_shared.ui import render_diagnostics
+from streamlit_shared.ui import native_table_height, render_diagnostics
 from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
 
 
@@ -207,6 +207,7 @@ def render(ctx: AppContext) -> None:
                     hide_index=True,
                     num_rows="fixed",
                     width="stretch",
+                    height=native_table_height(len(editor_rows)),
                     disabled=["Name", "Role", "DB Platform", "Status"],
                     column_config={
                         "Name": st.column_config.TextColumn("Name", pinned=True),
@@ -228,13 +229,13 @@ def render(ctx: AppContext) -> None:
                 selected_name_set = set(selected_names)
 
                 st.divider()
-                action_cols = st.columns([0.48, 0.2, 0.12, 0.2], vertical_alignment="center")
+                action_cols = st.columns([1, 0.14, 0.09, 0.12], gap="small", vertical_alignment="center")
                 with action_cols[1]:
-                    save_clicked = st.button("Save changes", type="primary", key="conn_save_changes_btn")
+                    save_clicked = st.button("Save", type="primary", key="conn_save_changes_btn")
                 with action_cols[2]:
                     delete_clicked = st.button("Delete", type="secondary", key="conn_delete_btn")
                 with action_cols[3]:
-                    test_clicked = st.button("Test connection", type="secondary", key="conn_test_btn")
+                    test_clicked = st.button("Test", type="secondary", key="conn_test_btn")
 
                 if save_clicked:
                     if not selected_names:

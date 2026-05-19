@@ -8,6 +8,16 @@ import pandas as pd
 import streamlit as st
 
 
+def native_table_height(row_count: int, *, min_rows: int = 1, max_rows: int = 24) -> int:
+    """Return a Streamlit table height that expands for normal result sets."""
+    try:
+        parsed_count = int(row_count)
+    except (TypeError, ValueError):
+        parsed_count = 0
+    visible_rows = max(min_rows, min(parsed_count, max_rows))
+    return 42 + (visible_rows * 35)
+
+
 def st_df_safe(df: pd.DataFrame, **kwargs):
     """Render dataframes after coercing mixed object columns if Arrow rejects them."""
     if not isinstance(df, pd.DataFrame):

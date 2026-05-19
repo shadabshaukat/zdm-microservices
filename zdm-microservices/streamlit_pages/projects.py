@@ -15,6 +15,7 @@ from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import db_connection_names_for_role
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.response_file_form import active_migration_method_options
+from streamlit_shared.ui import native_table_height
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -129,6 +130,7 @@ def render(ctx: AppContext) -> None:
                 hide_index=True,
                 num_rows="fixed",
                 width="stretch",
+                height=native_table_height(len(rows)),
                 disabled=["Name", "Source", "Target", "Response File", "Migration Method"],
                 column_config={
                     "Name": st.column_config.TextColumn("Name", pinned=True),

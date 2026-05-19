@@ -15,7 +15,7 @@ from streamlit_shared.api_payload import (
 from streamlit_shared.console_layout import page_header_actions, page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_workflow_back_button
-from streamlit_shared.ui import render_diagnostics
+from streamlit_shared.ui import native_table_height, render_diagnostics
 
 
 STATUS_LABELS = {
@@ -268,6 +268,7 @@ def _render_discovery_dataframe(
         styled_df,
         hide_index=True,
         width="stretch",
+        height=native_table_height(len(df)),
         key=f"database_discovery_{key}",
         on_select="rerun",
         selection_mode="single-row",
