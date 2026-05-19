@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import html
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import altair as alt
 import pandas as pd
@@ -9,7 +9,7 @@ import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_jobs_dashboard_response
-from streamlit_shared.console_layout import page_panel, render_page_header
+from streamlit_shared.console_layout import page_header_actions, page_panel
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_data import (
     KPI_COLUMNS,
@@ -20,8 +20,8 @@ from streamlit_shared.job_data import (
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import (
     monitor_job_url,
+    query_param,
     render_diagnostics,
-    st_df_safe,
 )
 
 
@@ -36,6 +36,14 @@ CHART_STATUS_COLORS = {
     "MIGRATE": "#0891B2",
 }
 CHART_FALLBACK_COLORS = ["#2563EB", "#14B8A6", "#F59E0B", "#8B5CF6", "#64748B"]
+FLEET_TAB_PARAM_LABELS = {
+    "overview": "Overview",
+    "fleet_status": "Fleet Status",
+    "job_details": "Job Details",
+    "failures": "Failures",
+    "diagnostics": "Diagnostics",
+}
+FLEET_TAB_LABELS = list(FLEET_TAB_PARAM_LABELS.values())
 
 
 def _render_dashboard_styles() -> None:
@@ -198,6 +206,63 @@ def _render_dashboard_styles() -> None:
             --metric-color: #475569;
         }
 
+        .zeus-dashboard-table-wrap {
+            width: 100%;
+            overflow-x: auto;
+            margin-top: 0.65rem;
+            border: 1px solid var(--zeus-border);
+            border-radius: 8px;
+            background: #FFFFFF;
+            box-shadow: var(--zeus-shadow-subtle);
+        }
+
+        .zeus-dashboard-table {
+            width: 100%;
+            min-width: 980px;
+            border-collapse: collapse;
+            color: var(--zeus-text);
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }
+
+        .zeus-dashboard-table th {
+            padding: 0.62rem 0.72rem;
+            border-bottom: 1px solid var(--zeus-border);
+            background: #F8FAFC;
+            color: var(--zeus-text);
+            font-size: 0.73rem;
+            font-weight: 780;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        .zeus-dashboard-table td {
+            max-width: 260px;
+            padding: 0.62rem 0.72rem;
+            border-bottom: 1px solid #E8EEF5;
+            color: var(--zeus-text);
+            overflow-wrap: anywhere;
+            vertical-align: top;
+        }
+
+        .zeus-dashboard-table tr:nth-child(even) td {
+            background: #FBFCFE;
+        }
+
+        .zeus-dashboard-table tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .zeus-dashboard-table__link {
+            color: var(--zeus-primary-dark);
+            font-weight: 760;
+            text-decoration: none;
+        }
+
+        .zeus-dashboard-table__link:hover {
+            text-decoration: underline;
+        }
+
         @media (max-width: 900px) {
             .zeus-job-summary-card__metrics {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -253,22 +318,95 @@ def _job_type_summary_panel(title: str, subtitle: str, counts: Dict[str, int], a
     st.html(_job_type_summary_markup(title, subtitle, counts, accent))
 
 
+def _render_snapshot_metadata(payload: Dict[str, Any]) -> None:
+    with page_panel("Snapshot Metadata"):
+        meta_cols = st.columns(2)
+        with meta_cols[0]:
+            st.caption("Snapshot source")
+            st.markdown(f"`{payload.get('source') or 'Unavailable'}`")
+        with meta_cols[1]:
+            st.caption("Last refreshed")
+            st.markdown(f"`{payload.get('last_refreshed') or 'Unavailable'}`")
+
+
+def _render_dashboard_table(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    link_view: Optional[str] = None,
+    return_tab: Optional[str] = None,
+) -> None:
+    if df.empty or not columns:
+        st.caption("No rows to display.")
+        return
+
+    header = "".join(f"<th>{html.escape(str(column))}</th>" for column in columns)
+    body_rows = []
+    for _, row in df.iterrows():
+        cells = []
+        for column in columns:
+            value = _dashboard_cell_text(row.get(column, ""))
+            if link_view and column == "Job ID" and value:
+                url = monitor_job_url(
+                    value,
+                    link_view,
+                    return_section="fleet_dashboard",
+                    return_tab=return_tab,
+                )
+                cells.append(
+                    '<td>'
+                    f'<a class="zeus-dashboard-table__link" href="{html.escape(url, quote=True)}" target="_self">'
+                    f"{html.escape(value)}</a>"
+                    "</td>"
+                )
+            else:
+                cells.append(f"<td>{html.escape(value)}</td>")
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"""
+        <div class="zeus-dashboard-table-wrap">
+            <table class="zeus-dashboard-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _dashboard_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def _active_fleet_tab_label() -> str:
+    requested = query_param("fleet_tab").strip().lower()
+    return FLEET_TAB_PARAM_LABELS.get(requested, "Overview")
+
+
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
     _render_dashboard_styles()
 
-    render_page_header(
+    with page_header_actions(
         "Execute & Observe",
         "Fleet Dashboard",
         "Review fleet-level migration status across projects, databases, and ZDM jobs.",
-    )
+        key="fleet-dashboard-header-actions",
+    ):
+        refresh_gap, refresh_action = st.columns([0.52, 0.48], vertical_alignment="bottom")
+        with refresh_action:
+            refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
     render_workflow_back_button()
-
-    refresh_col, meta_col = st.columns([0.18, 0.82], vertical_alignment="center")
-    with refresh_col:
-        refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
 
     if refresh_jobs or "fleet_jobs_payload" not in st.session_state:
         payload = api_request(
@@ -293,14 +431,6 @@ def render(ctx: AppContext) -> None:
         st.info("No job snapshot available.")
         st.stop()
     payload = validate_payload_or_stop(payload_raw, validate_jobs_dashboard_response)
-
-    with meta_col:
-        details = []
-        if payload.get("source"):
-            details.append(f"Source: {payload.get('source')}")
-        if payload.get("last_refreshed"):
-            details.append(f"Last refreshed: {payload.get('last_refreshed')}")
-        st.caption(" · ".join(details) if details else "Snapshot metadata unavailable")
 
     warnings = payload.get("warnings") or []
     if warnings:
@@ -413,12 +543,13 @@ def render(ctx: AppContext) -> None:
     def _column_picker(df: pd.DataFrame, defaults: List[str], key: str) -> List[str]:
         available = [column for column in defaults if column in df.columns]
         extras = [column for column in df.columns if column not in available]
-        selected = st.multiselect(
-            "Columns to show",
-            available + extras,
-            default=available,
-            key=key,
-        )
+        with st.expander("Table columns", expanded=False):
+            selected = st.multiselect(
+                "Columns to show",
+                available + extras,
+                default=available,
+                key=key,
+            )
         return selected or available
 
     def _sort_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -436,13 +567,6 @@ def render(ctx: AppContext) -> None:
             kind="stable",
         )
         return sorted_df.drop(columns=["_project_sort", "_type_sort", "_job_sort"])
-
-    def _with_job_links(df: pd.DataFrame, view: str) -> pd.DataFrame:
-        if df.empty or "Job ID" not in df.columns:
-            return df
-        linked = df.copy()
-        linked["Job ID"] = linked["Job ID"].apply(lambda value: monitor_job_url(value, view))
-        return linked
 
     def _fleet_status_display_df(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -476,27 +600,24 @@ def render(ctx: AppContext) -> None:
         key: str,
         empty_message: str,
         link_view: Optional[str] = None,
+        return_tab: Optional[str] = None,
     ) -> None:
         st.markdown(f"### {title}")
         if df.empty:
             st.info(empty_message)
             return
         table_df = _sort_dashboard_rows(df)
-        if link_view:
-            table_df = _with_job_links(table_df, link_view)
         display_df = table_df.rename(columns=table_column_labels)
         display_defaults = [table_column_labels.get(column, column) for column in defaults]
         columns = _column_picker(display_df, display_defaults, key)
-        column_config = {}
-        if link_view and "Job ID" in columns:
-            column_config["Job ID"] = st.column_config.LinkColumn(
-                "Job ID",
-                display_text=r"job_id=([^&]+)",
-                help="Open in ZDM Job Monitoring",
-            )
-        st_df_safe(display_df[columns], hide_index=True, width='stretch', column_config=column_config)
+        _render_dashboard_table(display_df[columns], columns, link_view, return_tab)
 
-    tabs = st.tabs(["Overview", "Fleet Status", "Job Details", "Failures", "Diagnostics"])
+    active_fleet_tab_label = _active_fleet_tab_label()
+    tabs = st.tabs(
+        FLEET_TAB_LABELS,
+        default=active_fleet_tab_label,
+        key=f"fleet_dashboard_tabs_{active_fleet_tab_label.lower().replace(' ', '_')}",
+    )
     eval_kpis = zdm_job_kpis(jobs_df, "EVAL")
     migrate_kpis = zdm_job_kpis(jobs_df, "MIGRATE")
     fleet_status_df = pd.concat(
@@ -558,6 +679,7 @@ def render(ctx: AppContext) -> None:
             "fleet_status_columns",
             "No fleet rows match the selected filters.",
             link_view="details",
+            return_tab="fleet_status",
         )
 
     with tabs[2]:
@@ -583,6 +705,7 @@ def render(ctx: AppContext) -> None:
             "job_detail_columns",
             "No jobs match the selected filters.",
             link_view="details",
+            return_tab="job_details",
         )
 
     with tabs[3]:
@@ -609,7 +732,9 @@ def render(ctx: AppContext) -> None:
             "failure_columns",
             "No failed jobs match the selected filters.",
             link_view="logs",
+            return_tab="failures",
         )
 
     with tabs[4]:
+        _render_snapshot_metadata(payload)
         render_diagnostics(payload)

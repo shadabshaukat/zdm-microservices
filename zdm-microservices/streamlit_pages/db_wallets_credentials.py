@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
@@ -11,6 +12,7 @@ from streamlit_shared.wallet_payload import (
     validate_credential_wallet_delete_response,
     validate_credential_wallet_rows,
 )
+
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -33,10 +35,10 @@ def render(ctx: AppContext) -> None:
     wallet_names = [row["name"] for row in wallet_rows]
     wallet_credentials = {row["name"]: row.get("credential_username") for row in wallet_rows}
 
-    left, right = st.columns([1, 1])
+    tabs = st.tabs(["Create wallet & credential", "Saved wallets"])
 
-    with left:
-        with page_panel("Create wallet"):
+    with tabs[0]:
+        with page_panel("Create wallet", width="form"):
             with st.form("create_wallet", border=False):
                 wallet_name = st.text_input("Credential wallet name", help="Creates MIGRATION_BASE/wallets/cred/<wallet_name>")
                 create_wallet_clicked = st.form_submit_button("Create wallet", type="primary")
@@ -58,8 +60,7 @@ def render(ctx: AppContext) -> None:
                         st.success(validated["status"])
                         st.rerun()
 
-    with right:
-        with page_panel("Create credential"):
+        with page_panel("Create credential", width="form"):
             wallet_options = ["-- Select wallet --"] + wallet_names
 
             selected_wallet = st.selectbox("Wallet", wallet_options)
@@ -97,56 +98,67 @@ def render(ctx: AppContext) -> None:
                         st.success(validated["status"])
                         st.rerun()
 
-    with page_panel("Saved wallets"):
-        if wallets_unavailable:
-            st.error("ZEUS backend is not reachable. Saved wallets cannot be loaded.")
-        elif wallet_rows:
-            header_cols = st.columns([0.08, 0.38, 0.34, 0.2])
-            header_cols[0].caption("Delete")
-            header_cols[1].caption("Wallet")
-            header_cols[2].caption("Credential user")
-            header_cols[3].caption("Status")
-
-            to_delete = []
-            for row in wallet_rows:
-                name = row["name"]
-                credential_user = row.get("credential_username") or ""
-                status = "Ready" if credential_user else "Empty"
-                row_cols = st.columns([0.08, 0.38, 0.34, 0.2], vertical_alignment="center")
-                selected = row_cols[0].checkbox(
-                    f"Delete {name}",
-                    key=f"credential_wallet_delete_{name}",
-                    label_visibility="collapsed",
+    with tabs[1]:
+        with page_panel("Saved wallets"):
+            if wallets_unavailable:
+                st.error("ZEUS backend is not reachable. Saved wallets cannot be loaded.")
+            elif wallet_rows:
+                editor_rows = [
+                    {
+                        "Wallet": row["name"],
+                        "Credential user": row.get("credential_username") or "",
+                        "Status": "Ready" if row.get("credential_username") else "Empty",
+                        "Delete": False,
+                    }
+                    for row in wallet_rows
+                ]
+                edited_df = st.data_editor(
+                    pd.DataFrame(editor_rows),
+                    hide_index=True,
+                    num_rows="fixed",
+                    width="stretch",
+                    disabled=["Wallet", "Credential user", "Status"],
+                    column_config={
+                        "Wallet": st.column_config.TextColumn("Wallet", pinned=True),
+                        "Credential user": st.column_config.TextColumn("Credential user"),
+                        "Status": st.column_config.TextColumn("Status"),
+                        "Delete": st.column_config.CheckboxColumn("Delete"),
+                    },
+                    key="credential_wallet_editor",
                 )
-                row_cols[1].markdown(f"**{name}**")
-                row_cols[2].markdown(credential_user or "_No credential_")
-                row_cols[3].markdown(status)
-                if selected:
-                    to_delete.append(name)
+                to_delete = [
+                    str(row.get("Wallet"))
+                    for row in edited_df.to_dict("records")
+                    if bool(row.get("Delete")) and row.get("Wallet")
+                ]
 
-            confirm_delete = False
-            if to_delete:
-                selected_has_credentials = any(wallet_credentials.get(name) for name in to_delete)
-                if selected_has_credentials:
-                    st.warning("Deleting credential wallets removes stored DB credentials.")
-                    confirm_delete = st.checkbox("Confirm deletion", key="credential_wallet_delete_confirm")
-                else:
-                    confirm_delete = True
+                confirm_delete = False
+                if to_delete:
+                    selected_has_credentials = any(wallet_credentials.get(name) for name in to_delete)
+                    if selected_has_credentials:
+                        st.warning("Deleting credential wallets removes stored DB credentials.")
+                        confirm_delete = st.checkbox("Confirm deletion", key="credential_wallet_confirm_delete")
+                    else:
+                        confirm_delete = True
 
-            if st.button("Delete selected wallets", type="secondary", disabled=bool(to_delete) and not confirm_delete):
-                if not to_delete:
-                    st.info("No wallets selected for deletion.")
-                else:
-                    deleted = 0
-                    for name in to_delete:
-                        data = api_request("delete", f"/credential-wallets/{name}", api_base, auth)
-                        if data:
-                            validate_payload_or_stop(data, validate_credential_wallet_delete_response)
-                            deleted += 1
-                    st.success(f"Deleted {deleted} wallet{'s' if deleted != 1 else ''}.")
-                    st.session_state.pop("credential_wallet_delete_confirm", None)
-                    st.rerun()
-        else:
-            st.caption("No credential wallets saved.")
+                action_cols = st.columns([0.88, 0.12])
+                with action_cols[-1]:
+                    delete_clicked = st.button("Delete", type="secondary", width="stretch", disabled=bool(to_delete) and not confirm_delete)
+
+                if delete_clicked:
+                    if not to_delete:
+                        st.info("No wallets selected for deletion.")
+                    else:
+                        deleted = 0
+                        for name in to_delete:
+                            data = api_request("delete", f"/credential-wallets/{name}", api_base, auth)
+                            if data:
+                                validate_payload_or_stop(data, validate_credential_wallet_delete_response)
+                                deleted += 1
+                        st.success(f"Deleted {deleted} wallet{'s' if deleted != 1 else ''}.")
+                        st.session_state.pop("credential_wallet_confirm_delete", None)
+                        st.rerun()
+            else:
+                st.caption("No credential wallets saved.")
 
     # -----------------------------

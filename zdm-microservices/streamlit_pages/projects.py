@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
@@ -14,7 +15,6 @@ from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import db_connection_names_for_role
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.response_file_form import active_migration_method_options
-from streamlit_shared.ui import render_static_table
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -58,7 +58,7 @@ def render(ctx: AppContext) -> None:
     tabs = st.tabs(["Create project", "Saved projects"])
 
     with tabs[0]:
-        with page_panel("Create project"):
+        with page_panel("Create project", width="form"):
             with st.form("create_project", border=False):
                 project_name = st.text_input(
                     "Project name",
@@ -120,19 +120,31 @@ def render(ctx: AppContext) -> None:
                         "Target": project_info.get("target_connection", ""),
                         "Response File": project_info.get("rsp", ""),
                         "Migration Method": project_info.get("migration_method", ""),
+                        "Delete": False,
                     }
                 )
 
-            render_static_table(
-                rows,
-                ["Name", "Source", "Target", "Response File", "Migration Method"],
+            edited_df = st.data_editor(
+                pd.DataFrame(rows),
+                hide_index=True,
+                num_rows="fixed",
+                width="stretch",
+                disabled=["Name", "Source", "Target", "Response File", "Migration Method"],
+                column_config={
+                    "Name": st.column_config.TextColumn("Name", pinned=True),
+                    "Source": st.column_config.TextColumn("Source"),
+                    "Target": st.column_config.TextColumn("Target"),
+                    "Response File": st.column_config.TextColumn("Response File"),
+                    "Migration Method": st.column_config.TextColumn("Migration Method"),
+                    "Delete": st.column_config.CheckboxColumn("Delete"),
+                },
+                key="project_delete_editor",
             )
-
-            to_delete = st.multiselect(
-                "Projects to delete",
-                list(projects_resp.keys()),
-                key="projects_to_delete",
-            )
+            to_delete = [
+                str(row.get("Name"))
+                for row in edited_df.to_dict("records")
+                if bool(row.get("Delete")) and row.get("Name")
+            ]
             confirm_delete = False
             if to_delete:
                 st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
@@ -141,7 +153,11 @@ def render(ctx: AppContext) -> None:
                     key="project_delete_confirm",
                 )
 
-            if st.button("Delete checked projects", type="secondary", disabled=bool(to_delete) and not confirm_delete):
+            action_cols = st.columns([0.88, 0.12])
+            with action_cols[-1]:
+                delete_clicked = st.button("Delete", type="secondary", width="stretch", disabled=bool(to_delete) and not confirm_delete)
+
+            if delete_clicked:
                 if not to_delete:
                     st.info("No projects selected for deletion.")
                 else:

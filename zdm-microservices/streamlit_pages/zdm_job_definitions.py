@@ -11,7 +11,7 @@ from streamlit_shared.api_payload import (
     validate_projects_response,
     validate_run_job_response,
 )
-from streamlit_shared.console_layout import render_page_header
+from streamlit_shared.console_layout import page_control_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import is_adb_database_type
 from streamlit_shared.job_form import (
@@ -53,11 +53,36 @@ def render(ctx: AppContext) -> None:
         api_request_required("get", "/projects", api_base, auth),
         validate_projects_response,
     )
+    project_names = list(projects_resp.keys())
+
+    # Pending load from ZDM Job Submission page (explicit load button)
+    pending_load = st.session_state.pop("runjob_load_pending", "")
+
+    with page_control_panel("job-definition-project-controls"):
+        sel_l, sel_r = st.columns([1, 1], vertical_alignment="top")
+
+        with sel_l:
+            project = st.selectbox(
+                "Project",
+                ["-- Select project --"] + project_names,
+                key="runjob_project",
+            )
+        with sel_r:
+            run_type = st.selectbox(
+                "Run type",
+                ["EVAL", "MIGRATE"],
+                index=0,
+                key="runjob_run_type",
+            )
+
+        if project == "-- Select project --":
+            st.info("Select a project to start.")
+            st.stop()
+
     connections_resp = validate_payload_or_stop(
         api_request_required("get", "/dbconnections", api_base, auth),
         validate_dbconnections_response,
     )
-    project_names = list(projects_resp.keys())
     # saved jobs (for auto-load matching project+run_type)
     saved_jobs_raw = api_request_required("get", "/saved-jobs", api_base, auth)
     saved_jobs_resp = validate_payload_or_stop(saved_jobs_raw, validate_saved_jobs_response)
@@ -65,29 +90,6 @@ def render(ctx: AppContext) -> None:
     cred_wallets_resp = api_request_required("get", "/credential-wallets/paths", api_base, auth)
     wallet_map_runjob = validate_payload_or_stop(cred_wallets_resp, validate_credential_wallet_paths_response)
     wallet_options_runjob = [SELECT_WALLET] + list(wallet_map_runjob.keys())
-
-    sel_l, sel_r = st.columns([1, 1], vertical_alignment="top")
-
-    with sel_l:
-        project = st.selectbox(
-            "Project",
-            ["-- Select project --"] + project_names,
-            key="runjob_project",
-        )
-    with sel_r:
-        run_type = st.selectbox(
-            "Run type",
-            ["EVAL", "MIGRATE"],
-            index=0,
-            key="runjob_run_type",
-        )
-
-    # Pending load from ZDM Job Submission page (explicit load button)
-    pending_load = st.session_state.pop("runjob_load_pending", "")
-
-    if project == "-- Select project --":
-        st.info("Select a project to start.")
-        st.stop()
 
     def _blank(v: Any) -> bool:
         return v is None or (isinstance(v, str) and not v.strip())

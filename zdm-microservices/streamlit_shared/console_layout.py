@@ -323,6 +323,12 @@ def render_console_shell_styles() -> None:
             border-bottom: 1px solid var(--zeus-border);
         }
 
+        .zeus-page-header--inline {
+            margin: 0 !important;
+            padding-bottom: 0 !important;
+            border-bottom: 0 !important;
+        }
+
         .zeus-page-header__category {
             margin: 0 0 0.18rem 0;
             color: var(--zeus-primary-dark);
@@ -352,6 +358,22 @@ def render_console_shell_styles() -> None:
             line-height: 1.45;
         }
 
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] {
+            padding-bottom: clamp(0.82rem, 1.55vh, 1rem) !important;
+            border-bottom: 1px solid var(--zeus-border);
+            margin-bottom: clamp(0.82rem, 1.55vh, 1rem) !important;
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] [data-testid="stElementContainer"]:has(.zeus-page-header-action-marker) {
+            display: none !important;
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] .stButton > button,
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] [data-testid="stBaseButton-primary"],
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] [data-testid="stBaseButton-secondary"] {
+            min-height: 38px;
+        }
+
         .zeus-panel-heading {
             margin: 0 0 var(--zeus-panel-heading-gap) 0;
             color: var(--zeus-text);
@@ -373,6 +395,28 @@ def render_console_shell_styles() -> None:
         div[data-testid="stVerticalBlock"][class*="st-key-zeus-panel-"] {
             gap: var(--zeus-panel-gap) !important;
             padding: var(--zeus-panel-pad-y) var(--zeus-panel-pad-x) !important;
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-panel-form-"] {
+            max-width: min(100%, 860px);
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-control-panel-"] {
+            max-width: min(100%, 860px);
+            gap: var(--zeus-panel-gap) !important;
+            margin-bottom: clamp(0.85rem, 1.6vh, 1.1rem) !important;
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-control-panel-"]:has(.zeus-control-panel-compact) {
+            max-width: min(100%, 360px);
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-control-panel-"]:has(.zeus-control-panel-right) {
+            margin-left: auto !important;
+        }
+
+        div[data-testid="stVerticalBlock"][class*="st-key-zeus-control-panel-"] [data-testid="stElementContainer"]:has(.zeus-control-panel-marker) {
+            display: none !important;
         }
 
         div[data-testid="stVerticalBlock"][class*="st-key-zeus-panel-"] [data-testid="stVerticalBlock"] {
@@ -597,28 +641,38 @@ def render_console_shell_styles() -> None:
         }
 
         .stTabs [data-baseweb="tab-list"] {
-            gap: 6px;
+            gap: 0.42rem;
+            padding: 0.25rem 0 0.55rem 0;
             border-bottom: 1px solid var(--zeus-border);
         }
 
         .stTabs [data-baseweb="tab"] {
+            min-height: 34px;
+            padding: 0.46rem 0.78rem;
+            border: 1px solid transparent;
             border-radius: 8px 8px 0 0;
             color: var(--zeus-text-muted);
-            font-weight: 700;
+            font-size: 0.82rem;
+            font-weight: 650;
+            letter-spacing: 0;
         }
 
         .stTabs [aria-selected="true"] {
+            border-color: var(--zeus-border);
+            border-bottom-color: #FFFFFF !important;
+            background: #FFFFFF;
             color: var(--zeus-primary-dark) !important;
-            background: rgba(239, 246, 255, 0.88);
+            box-shadow: inset 0 -2px 0 var(--zeus-primary);
         }
 
         .stTabs [data-baseweb="tab-highlight"] {
-            background-color: var(--zeus-primary) !important;
+            display: none !important;
         }
 
-        .stTabs [data-baseweb="tab"][aria-selected="true"] {
-            border-bottom-color: var(--zeus-primary) !important;
-            box-shadow: inset 0 -2px 0 var(--zeus-primary) !important;
+        .stTabs [data-baseweb="tab"] p {
+            margin: 0;
+            font-size: inherit;
+            line-height: 1.2;
         }
 
         hr {
@@ -652,6 +706,10 @@ def render_console_shell_styles() -> None:
 
             .zeus-page-header__title {
                 font-size: 1.55rem;
+            }
+
+            div[data-testid="stVerticalBlock"][class*="st-key-zeus-page-header-actions-"] {
+                padding-bottom: clamp(0.95rem, 1.8vh, 1.15rem) !important;
             }
         }
         </style>
@@ -706,31 +764,81 @@ def render_console_header(*, api_base: str, username: str) -> None:
     )
 
 
+def _page_header_markup(category: str, title: str, description: str, *, inline: bool = False) -> str:
+    header_class = "zeus-page-header zeus-page-header--inline" if inline else "zeus-page-header"
+    return f"""
+    <section class="{header_class}">
+        <p class="zeus-page-header__category">{html.escape(category)}</p>
+        <div class="zeus-page-header__title" role="heading" aria-level="1">{html.escape(title)}</div>
+        <p class="zeus-page-header__description">{html.escape(description)}</p>
+    </section>
+    """
+
+
 def render_page_header(category: str, title: str, description: str) -> None:
-    st.markdown(
-        f"""
-        <section class="zeus-page-header">
-            <p class="zeus-page-header__category">{html.escape(category)}</p>
-            <div class="zeus-page-header__title" role="heading" aria-level="1">{html.escape(title)}</div>
-            <p class="zeus-page-header__description">{html.escape(description)}</p>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(_page_header_markup(category, title, description), unsafe_allow_html=True)
 
 
-def _panel_key(title: str | None) -> str | None:
+def _panel_key(title: str | None, width: str = "standard") -> str | None:
     if not title:
         return None
     slug_chars = [char.lower() if char.isalnum() else "-" for char in title]
     slug = "-".join(part for part in "".join(slug_chars).split("-") if part)
-    return f"zeus-panel-{slug or 'section'}"
+    prefix = "zeus-panel-form" if width == "form" else "zeus-panel"
+    return f"{prefix}-{slug or 'section'}"
+
+
+def _slug_key(value: str) -> str:
+    slug_chars = [char.lower() if char.isalnum() else "-" for char in value]
+    return "-".join(part for part in "".join(slug_chars).split("-") if part)
 
 
 @contextmanager
-def page_panel(title: str | None = None, *, key: str | None = None) -> Iterator[None]:
-    panel_key = key or _panel_key(title)
+def page_panel(title: str | None = None, *, key: str | None = None, width: str = "standard") -> Iterator[None]:
+    if width not in {"standard", "form"}:
+        raise ValueError(f"Unknown page panel width: {width}")
+    panel_key = key or _panel_key(title, width)
     with st.container(border=True, key=panel_key):
         if title:
             st.markdown(f'<div class="zeus-panel-heading">{html.escape(title)}</div>', unsafe_allow_html=True)
+        yield
+
+
+@contextmanager
+def page_header_actions(
+    category: str,
+    title: str,
+    description: str,
+    *,
+    key: str,
+    width: str = "compact",
+) -> Iterator[None]:
+    if width not in {"compact", "standard"}:
+        raise ValueError(f"Unknown page header action width: {width}")
+    header_key = f"zeus-page-header-actions-{_slug_key(key) or 'actions'}"
+    column_weights = [0.72, 0.28] if width == "compact" else [0.64, 0.36]
+    with st.container(key=header_key):
+        st.markdown(
+            f'<span class="zeus-page-header-action-marker zeus-page-header-action-{width}"></span>',
+            unsafe_allow_html=True,
+        )
+        text_col, action_col = st.columns(column_weights, vertical_alignment="bottom")
+        with text_col:
+            st.markdown(_page_header_markup(category, title, description, inline=True), unsafe_allow_html=True)
+        with action_col:
+            yield
+
+
+@contextmanager
+def page_control_panel(key: str, *, width: str = "standard", align: str = "left") -> Iterator[None]:
+    if width not in {"standard", "compact"}:
+        raise ValueError(f"Unknown page control panel width: {width}")
+    if align not in {"left", "right"}:
+        raise ValueError(f"Unknown page control panel alignment: {align}")
+    panel_key = f"zeus-control-panel-{_slug_key(key) or 'controls'}"
+    with st.container(key=panel_key):
+        st.markdown(
+            f'<span class="zeus-control-panel-marker zeus-control-panel-{width} zeus-control-panel-{align}"></span>',
+            unsafe_allow_html=True,
+        )
         yield

@@ -124,9 +124,22 @@ def query_param(name: str, default: str = "") -> str:
     return str(value or default)
 
 
-def monitor_job_url(job_id: Any, view: str = "details") -> str:
+def monitor_job_url(
+    job_id: Any,
+    view: str = "details",
+    *,
+    return_section: str | None = None,
+    return_tab: str | None = None,
+) -> str:
     job_id_text = str(job_id or "").strip()
     if not job_id_text:
         return ""
     view_text = "logs" if str(view).lower() == "logs" else "details"
-    return f"?section=jobs&job_id={quote(job_id_text)}&view={view_text}"
+    url = f"?section=jobs&job_id={quote(job_id_text)}&view={view_text}"
+    return_section_text = str(return_section or "").strip()
+    return_tab_text = str(return_tab or "").strip()
+    if return_section_text:
+        url = f"{url}&return_section={quote(return_section_text)}"
+    if return_tab_text:
+        url = f"{url}&return_tab={quote(return_tab_text)}"
+    return url
