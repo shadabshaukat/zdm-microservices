@@ -30,7 +30,7 @@ NAV_GROUPS = [
         ],
     ),
     (
-        "Database Setup",
+        "Prepare Databases",
         [
             ("DB Connections", "connections"),
             ("DB Wallets & Credentials", "wallet"),
@@ -102,8 +102,10 @@ def render_navigation(section: str) -> None:
     with st.sidebar:
         st.subheader("Navigation")
         for group_label, items in NAV_GROUPS:
+            group_active = any(section == section_key for _, section_key in items)
+            group_class = "zeus-nav-group-label zeus-nav-group-label--active" if group_active else "zeus-nav-group-label"
             st.markdown(
-                f'<div class="zeus-nav-group-label">{html.escape(group_label)}</div>',
+                f'<div class="{group_class}">{html.escape(group_label)}</div>',
                 unsafe_allow_html=True,
             )
             for label, section_key in items:

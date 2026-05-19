@@ -36,10 +36,14 @@ def render_db_auth_inputs_for_method(
         return {"method": "password", "username": username.strip(), "password": password}
 
     wallet_names = [str(row["name"]) for row in wallet_rows]
+    wallet_options = ["-- Select wallet --"] + wallet_names
+    state_key = f"{key_prefix}_auth_wallet"
+    if st.session_state.get(state_key) not in wallet_options:
+        st.session_state[state_key] = "-- Select wallet --"
     selected = st.selectbox(
         "Credential wallet",
-        ["-- Select wallet --"] + wallet_names,
-        key=f"{key_prefix}_auth_wallet",
+        wallet_options,
+        key=state_key,
     )
     wallet_row = next((row for row in wallet_rows if row.get("name") == selected), {})
     credential_username = wallet_row.get("credential_username")

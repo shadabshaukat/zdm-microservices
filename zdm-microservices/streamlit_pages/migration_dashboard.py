@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from streamlit_shared.api_client import api_request_required, validate_payload_or_stop
+from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_jobs_dashboard_response
 from streamlit_shared.console_layout import render_page_header
 from streamlit_shared.context import AppContext
@@ -21,6 +21,27 @@ from streamlit_shared.ui import (
     render_diagnostics,
     st_df_safe,
 )
+
+
+CHART_STATUS_COLORS = {
+    "Failed": "#DC2626",
+    "Succeeded": "#059669",
+    "Running": "#D97706",
+    "Paused": "#7C3AED",
+    "Suspended": "#6B7280",
+    "Waiting": "#0891B2",
+    "EVAL": "#7C3AED",
+    "MIGRATE": "#0891B2",
+}
+CHART_FALLBACK_COLORS = ["#2563EB", "#14B8A6", "#F59E0B", "#8B5CF6", "#64748B"]
+
+
+def _chart_colors(columns) -> List[str]:
+    return [
+        CHART_STATUS_COLORS.get(str(column), CHART_FALLBACK_COLORS[index % len(CHART_FALLBACK_COLORS)])
+        for index, column in enumerate(columns)
+    ]
+
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -38,14 +59,18 @@ def render(ctx: AppContext) -> None:
         refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
 
     if refresh_jobs or "fleet_jobs_payload" not in st.session_state:
-        payload = api_request_required(
+        payload = api_request(
             "get",
             "/jobs",
             api_base,
             auth,
             params={"refresh": "true"} if refresh_jobs else None,
             timeout=180 if refresh_jobs else 30,
+            quiet=True,
         )
+        if payload is None:
+            st.error("ZEUS backend is not reachable. Fleet job snapshot cannot be loaded.")
+            return
         st.session_state["fleet_jobs_payload"] = validate_payload_or_stop(
             payload,
             validate_jobs_dashboard_response,
@@ -148,7 +173,7 @@ def render(ctx: AppContext) -> None:
             st.info("No data available.")
             return
         chart_df = counts.pivot(index=index_col, columns=group_col, values="Count").fillna(0)
-        st.bar_chart(chart_df)
+        st.bar_chart(chart_df, color=_chart_colors(chart_df.columns))
 
     def _job_type_lane(title: str, kpis: Dict[str, int]) -> None:
         st.markdown(f"## {title}")

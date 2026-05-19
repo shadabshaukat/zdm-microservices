@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
+from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import (
     validate_dbconnections_response,
     validate_project_create_response,
@@ -26,13 +26,17 @@ def render(ctx: AppContext) -> None:
     )
     render_workflow_back_button()
 
-    connections_cache = validate_payload_or_stop(
-        api_request_required("get", "/dbconnections", api_base, auth),
-        validate_dbconnections_response,
+    connections_raw = api_request("get", "/dbconnections", api_base, auth, quiet=True)
+    projects_raw = api_request("get", "/projects", api_base, auth, quiet=True)
+    connections_cache = (
+        validate_payload_or_stop(connections_raw, validate_dbconnections_response)
+        if connections_raw is not None
+        else {}
     )
-    projects_resp = validate_payload_or_stop(
-        api_request_required("get", "/projects", api_base, auth),
-        validate_projects_response,
+    projects_resp = (
+        validate_payload_or_stop(projects_raw, validate_projects_response)
+        if projects_raw is not None
+        else {}
     )
     source_conn_names = ["-- Select connection --"] + list(
         db_connection_names_for_role(connections_cache, "source")
@@ -40,6 +44,8 @@ def render(ctx: AppContext) -> None:
     target_conn_names = ["-- Select connection --"] + list(
         db_connection_names_for_role(connections_cache, "target")
     )
+    if st.session_state.get("target_conn_select") not in target_conn_names:
+        st.session_state["target_conn_select"] = "-- Select connection --"
 
     with page_panel("Create project"):
         with st.form("create_project", border=False):
@@ -74,6 +80,10 @@ def render(ctx: AppContext) -> None:
                 st.rerun()
 
     with page_panel("Existing projects"):
+        if projects_raw is None:
+            st.error("ZEUS backend is not reachable. Existing projects cannot be loaded.")
+            return
+
         if not projects_resp:
             st.info("No projects created yet.")
             return
