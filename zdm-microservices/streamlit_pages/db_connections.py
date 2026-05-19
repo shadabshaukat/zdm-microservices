@@ -63,7 +63,7 @@ def render(ctx: AppContext) -> None:
         else {}
     )
 
-    tabs = st.tabs(["Create connection", "Saved connections", "Test connection"])
+    tabs = st.tabs(["Create connection", "Saved connections"])
 
     with tabs[0]:
         with page_panel("Define Connection", width="form"):
@@ -186,7 +186,6 @@ def render(ctx: AppContext) -> None:
                             else:
                                 upload_ok = False
                         if upload_ok:
-                            st.session_state["last_saved_conn"] = name
                             st.session_state["conn_create_flash"] = flash_message
                             st.rerun()
                         else:
@@ -220,70 +219,72 @@ def render(ctx: AppContext) -> None:
                         "Credential Wallet": st.column_config.SelectboxColumn("Credential Wallet", options=wallet_editor_options, required=True),
                         "TLS without wallet": st.column_config.CheckboxColumn("TLS without wallet"),
                         "Status": st.column_config.TextColumn("Status"),
-                        "Delete": st.column_config.CheckboxColumn("Delete"),
+                        "Select": st.column_config.CheckboxColumn("Select"),
                     },
                     key="conn_saved_editor",
                 )
                 edited_records = edited_df.to_dict("records")
-                to_delete = [
-                    str(row.get("Name"))
-                    for row in edited_records
-                    if bool(row.get("Delete")) and str(row.get("Name"))
-                ]
+                selected_names = _selected_connection_names(edited_records)
+                selected_name_set = set(selected_names)
 
                 st.divider()
-                action_cols = st.columns([0.68, 0.16, 0.16])
+                action_cols = st.columns([0.48, 0.2, 0.12, 0.2], vertical_alignment="center")
                 with action_cols[1]:
-                    save_clicked = st.button("Save", type="primary", width="stretch")
+                    save_clicked = st.button("Save changes", type="primary", key="conn_save_changes_btn")
                 with action_cols[2]:
-                    delete_clicked = st.button("Delete", type="secondary", width="stretch")
+                    delete_clicked = st.button("Delete", type="secondary", key="conn_delete_btn")
+                with action_cols[3]:
+                    test_clicked = st.button("Test connection", type="secondary", key="conn_test_btn")
 
                 if save_clicked:
-                    edited_rows = [
-                        {
-                            "name": str(row.get("Name")),
-                            "original": conns.get(str(row.get("Name")), {}),
-                            "payload": _connection_payload_from_editor_row(row, conns.get(str(row.get("Name")), {})),
-                        }
-                        for row in edited_records
-                        if str(row.get("Name")) in conns
-                    ]
-                    invalid_rows = [
-                        row["name"]
-                        for row in edited_rows
-                        if not _connection_payload_is_valid(row["payload"])
-                    ]
-                    if invalid_rows:
-                        st.error("Host, service name, and credential wallet are required for: " + ", ".join(invalid_rows))
+                    if not selected_names:
+                        st.info("Select one or more connections to save changes.")
                     else:
-                        changed_rows = [
-                            row
-                            for row in edited_rows
-                            if _connection_payload_changed(row["payload"], row["original"])
+                        edited_rows = [
+                            {
+                                "name": str(row.get("Name")),
+                                "original": conns.get(str(row.get("Name")), {}),
+                                "payload": _connection_payload_from_editor_row(row, conns.get(str(row.get("Name")), {})),
+                            }
+                            for row in edited_records
+                            if str(row.get("Name")) in selected_name_set
                         ]
-                        if not changed_rows:
-                            st.info("No connection changes to save.")
+                        invalid_rows = [
+                            row["name"]
+                            for row in edited_rows
+                            if not _connection_payload_is_valid(row["payload"])
+                        ]
+                        if invalid_rows:
+                            st.error("Host, service name, and credential wallet are required for: " + ", ".join(invalid_rows))
                         else:
-                            saved = 0
-                            for row in changed_rows:
-                                payload = row["payload"]
-                                resp = api_request("post", "/dbconnections", api_base, auth, payload=payload)
-                                if resp:
-                                    validate_payload_or_stop(
-                                        resp,
-                                        validate_dbconnection_save_response,
-                                        expected_name=row["name"],
-                                    )
-                                    saved += 1
-                            st.success(f"Saved {saved} connection{'s' if saved != 1 else ''}.")
-                            st.rerun()
+                            changed_rows = [
+                                row
+                                for row in edited_rows
+                                if _connection_payload_changed(row["payload"], row["original"])
+                            ]
+                            if not changed_rows:
+                                st.info("No selected connection changes to save.")
+                            else:
+                                saved = 0
+                                for row in changed_rows:
+                                    payload = row["payload"]
+                                    resp = api_request("post", "/dbconnections", api_base, auth, payload=payload)
+                                    if resp:
+                                        validate_payload_or_stop(
+                                            resp,
+                                            validate_dbconnection_save_response,
+                                            expected_name=row["name"],
+                                        )
+                                        saved += 1
+                                st.success(f"Saved {saved} connection{'s' if saved != 1 else ''}.")
+                                st.rerun()
 
                 if delete_clicked:
-                    if not to_delete:
+                    if not selected_names:
                         st.info("No connections selected for deletion.")
                     else:
                         deleted = 0
-                        for name in to_delete:
+                        for name in selected_names:
                             resp = api_request("delete", f"/dbconnections/{name}", api_base, auth)
                             if resp:
                                 validate_payload_or_stop(resp, validate_dbconnection_delete_response)
@@ -291,34 +292,22 @@ def render(ctx: AppContext) -> None:
                         st.success(f"Deleted {deleted} connection{'s' if deleted != 1 else ''}.")
                         st.rerun()
 
-    with tabs[2]:
-        with page_panel("Test Connection", width="form"):
-            last_saved = st.session_state.get("last_saved_conn", "-- Select --")
-            options = ["-- Select --"] + list(conns.keys())
-            default_idx = options.index(last_saved) if last_saved in options else 0
-            test_name = st.selectbox("Connection", options, index=default_idx)
-            test_clicked = st.button("Test", type="primary")
-
-            if test_clicked:
-                if test_name == "-- Select --":
-                    st.error("Please select a connection.")
-                else:
-                    cinfo = conns.get(test_name, {})
-                    if not cinfo.get("credential_wallet_name"):
-                        st.error("This connection is missing a credential wallet. Edit the connection before testing.")
-                        st.stop()
-                    wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get(
-                        "allow_tls_without_wallet"
-                    )
-                    if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
-                        st.error("Upload a TLS wallet for this connection before testing.")
-                        st.stop()
-                    payload = {"name": test_name}
-                    data = api_request("post", "/dbconnections/test", api_base, auth, payload=payload)
-                    if data:
-                        validated = validate_payload_or_stop(data, validate_dbconnection_test_response)
-                        st.success(validated["message"])
-                        render_diagnostics(validated)
+                if test_clicked:
+                    if not selected_names:
+                        st.info("No connections selected for testing.")
+                    else:
+                        for selected_name in selected_names:
+                            cinfo = conns.get(selected_name, {})
+                            blocker = _connection_test_blocker(cinfo)
+                            if blocker:
+                                st.error(f"{selected_name}: {blocker}")
+                                continue
+                            payload = {"name": selected_name}
+                            data = api_request("post", "/dbconnections/test", api_base, auth, payload=payload)
+                            if data:
+                                validated = validate_payload_or_stop(data, validate_dbconnection_test_response)
+                                st.success(validated["message"])
+                                render_diagnostics(validated)
 
 
     # -----------------------------
@@ -349,10 +338,30 @@ def _connection_editor_rows(conns: Mapping[str, Mapping[str, Any]]) -> list[dict
                 "Credential Wallet": credential_wallet,
                 "TLS without wallet": bool(info.get("allow_tls_without_wallet")),
                 "Status": "Ready" if credential_wallet != "-- Select credential wallet --" else "Needs wallet",
-                "Delete": False,
+                "Select": False,
             }
         )
     return rows
+
+
+def _selected_connection_names(rows: list[Mapping[str, Any]]) -> list[str]:
+    selected: list[str] = []
+    for row in rows:
+        name = _editor_text(row.get("Name"))
+        if bool(row.get("Select")) and name:
+            selected.append(name)
+    return selected
+
+
+def _connection_test_blocker(cinfo: Mapping[str, Any]) -> str | None:
+    if not cinfo.get("credential_wallet_name"):
+        return "This connection is missing a credential wallet. Edit and save the connection before testing."
+    wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get(
+        "allow_tls_without_wallet"
+    )
+    if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
+        return "Upload a TLS wallet for this connection before testing."
+    return None
 
 
 def _connection_payload_from_editor_row(

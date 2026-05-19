@@ -2342,12 +2342,7 @@ def _remove_credential_wallet_metadata(wallet_name: str) -> None:
 def _credential_wallet_username_for_validation(wallet_name: str) -> Optional[str]:
     name = _validate_wallet_name(wallet_name)
     found, credential_username = _credential_wallet_metadata_value(name)
-    if found:
-        return credential_username
-    wallet_path = resolve_cred_wallet_path(name)
-    credential_username = _credential_wallet_username(wallet_path)
-    _upsert_credential_wallet_metadata(name, credential_username)
-    return credential_username
+    return credential_username if found else None
 
 
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
@@ -3108,8 +3103,9 @@ def _credential_wallet_dirs() -> List[Tuple[str, str]]:
 
 def _credential_wallets_api_response() -> Dict[str, List[Dict[str, Any]]]:
     metadata = load_credential_wallet_metadata()
+    wallet_dirs = _credential_wallet_dirs()
     wallets = []
-    for name, path in _credential_wallet_dirs():
+    for name, path in wallet_dirs:
         wallet_metadata = metadata.get(name, {})
         credential_username = wallet_metadata.get("credential_username")
         if credential_username is not None and not isinstance(credential_username, str):
@@ -3216,13 +3212,6 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
         raise HTTPException(status_code=400, detail="user is required")
     metadata_found, metadata_username = _credential_wallet_metadata_value(params.wallet_name)
     if metadata_found and metadata_username:
-        raise HTTPException(
-            status_code=409,
-            detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
-        )
-    existing_username = None if metadata_found else _credential_wallet_username(wallet_path)
-    if existing_username:
-        _upsert_credential_wallet_metadata(params.wallet_name, existing_username)
         raise HTTPException(
             status_code=409,
             detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
