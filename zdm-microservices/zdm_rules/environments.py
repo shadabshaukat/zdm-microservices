@@ -86,6 +86,20 @@ def db_connection_type_supports_role(value: Any, role: Any) -> bool:
     return bool(role_support)
 
 
+def db_connection_type_supports_method(value: Any, role: Any, migration_method: Any) -> bool:
+    normalized_role = normalize_connection_role(role)
+    method = str(migration_method or "").strip().upper()
+    if not normalized_role or not method:
+        return False
+
+    env = connection_environment(value)
+    support = env.get("supports") if isinstance(env, dict) else {}
+    role_support = support.get(normalized_role) if isinstance(support, dict) else []
+    if not isinstance(role_support, list):
+        return False
+    return method in {str(item).strip().upper() for item in role_support}
+
+
 def db_connection_names_for_role(connections: Any, role: Any) -> tuple[str, ...]:
     normalized_role = normalize_connection_role(role)
     if not normalized_role or not isinstance(connections, dict):

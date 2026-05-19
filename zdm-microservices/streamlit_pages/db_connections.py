@@ -17,11 +17,6 @@ from streamlit_shared.api_payload import (
 )
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
-from streamlit_shared.db_auth import (
-    render_db_auth_inputs_for_method,
-    render_db_auth_method,
-    validate_db_auth_selection,
-)
 from streamlit_shared.db_types import (
     DB_CONNECTION_ROLE_OPTIONS,
     db_connection_role_label,
@@ -32,7 +27,7 @@ from streamlit_shared.db_types import (
 )
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import render_diagnostics
-from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
+from streamlit_shared.wallet_payload import validate_credential_wallet_rows
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -44,6 +39,32 @@ def render(ctx: AppContext) -> None:
         "Create and maintain source and target DB connection records for ZDM configuration.",
     )
     render_workflow_back_button()
+
+    wallets_resp = api_request("get", "/credential-wallets", api_base, auth, quiet=True)
+    wallet_rows = (
+        validate_payload_or_stop(wallets_resp, validate_credential_wallet_rows)
+        if wallets_resp is not None
+        else []
+    )
+    wallet_user_by_name = {
+        str(row.get("name")): row.get("credential_username")
+        for row in wallet_rows
+    }
+    wallet_names = [str(row.get("name")) for row in wallet_rows if row.get("name")]
+    wallet_options = ["-- Select credential wallet --"] + wallet_names
+
+    raw_conns = api_request("get", "/dbconnections", api_base, auth, quiet=True)
+    conns = (
+        validate_payload_or_stop(raw_conns, validate_dbconnections_response)
+        if raw_conns is not None
+        else {}
+    )
+
+    def wallet_display(name: str) -> str:
+        if name == "-- Select credential wallet --":
+            return name
+        user = wallet_user_by_name.get(name)
+        return f"{name} ({user})" if user else name
 
     col_form, col_table = st.columns([1.15, 1.1])
 
@@ -78,6 +99,16 @@ def render(ctx: AppContext) -> None:
             host = st.text_input("Host", key="conn_host")
             port = st.number_input("Port", min_value=1, max_value=65535, value=1521, step=1, key="conn_port")
             service_name = st.text_input("Service Name", key="conn_service_name")
+            credential_wallet_name = st.selectbox(
+                "Credential wallet",
+                wallet_options,
+                format_func=wallet_display,
+                key="conn_credential_wallet",
+            )
+            if wallets_resp is None:
+                st.error("Credential wallets cannot be loaded. Check ZEUS Settings and backend availability.")
+            elif not wallet_names:
+                st.info("Create a DB Wallet & Credential before saving a DB connection.")
 
             is_adb = is_adb_database_type(db_type)
             if is_adb:
@@ -120,6 +151,8 @@ def render(ctx: AppContext) -> None:
             if save_clicked:
                 if not all([name, host, service_name]):
                     st.error("Name, host, and service_name are required.")
+                elif credential_wallet_name == "-- Select credential wallet --":
+                    st.error("Credential wallet is required.")
                 elif wallet_needed and not upload_file:
                     st.error("Wallet is required for this connection type/protocol. Please upload the wallet.")
                 else:
@@ -132,6 +165,7 @@ def render(ctx: AppContext) -> None:
                         "connection_role": connection_role,
                         "protocol": "TCPS" if use_tcps else "TCP",
                         "allow_tls_without_wallet": use_tls_no_wallet,
+                        "credential_wallet_name": credential_wallet_name,
                     }
                     data = api_request("post", "/dbconnections", api_base, auth, payload=payload)
                     if data:
@@ -158,11 +192,6 @@ def render(ctx: AppContext) -> None:
 
     with col_table:
         with page_panel("Saved Connections"):
-            raw_conns = api_request("get", "/dbconnections", api_base, auth, quiet=True)
-            conns = {}
-            if raw_conns is not None:
-                conns = validate_payload_or_stop(raw_conns, validate_dbconnections_response)
-
             if raw_conns is None:
                 st.error(
                     "ZEUS backend is not reachable. Check ZEUS Settings and make sure the backend service is running."
@@ -183,6 +212,9 @@ def render(ctx: AppContext) -> None:
                             "Protocol": info.get("protocol", ""),
                             "TLS w/o wallet": bool(info.get("allow_tls_without_wallet")),
                             "TLS Wallet dir": info.get("tls_wallet_uploaded_dir", ""),
+                            "Credential Wallet": info.get("credential_wallet_name") or "",
+                            "Credential User": wallet_user_by_name.get(info.get("credential_wallet_name") or "") or "",
+                            "Status": "Ready" if info.get("credential_wallet_name") else "Needs credential wallet",
                             "Delete?": False,
                         }
                     )
@@ -197,6 +229,9 @@ def render(ctx: AppContext) -> None:
                         "Role": st.column_config.TextColumn(disabled=True),
                         "DB Platform": st.column_config.TextColumn(disabled=True),
                         "TLS Wallet dir": st.column_config.TextColumn(disabled=True),
+                        "Credential Wallet": st.column_config.SelectboxColumn(options=[""] + wallet_names),
+                        "Credential User": st.column_config.TextColumn(disabled=True),
+                        "Status": st.column_config.TextColumn(disabled=True),
                         "Protocol": st.column_config.SelectboxColumn(options=["TCP", "TCPS"]),
                         "TLS w/o wallet": st.column_config.CheckboxColumn(),
                         "Delete?": st.column_config.CheckboxColumn(),
@@ -222,6 +257,7 @@ def render(ctx: AppContext) -> None:
                                 "service_name": row["Service"],
                                 "protocol": row["Protocol"],
                                 "allow_tls_without_wallet": bool(row["TLS w/o wallet"]),
+                                "credential_wallet_name": row["Credential Wallet"],
                             }
                             resp = api_request("post", "/dbconnections", api_base, auth, payload=payload)
                             if resp:
@@ -258,39 +294,21 @@ def render(ctx: AppContext) -> None:
             test_name = st.selectbox("Connection", options, index=default_idx)
             test_clicked = st.button("Test", type="primary")
 
-            st.divider()
-            auth_method = render_db_auth_method(key_prefix="conn_test")
-            wallet_rows = []
-            if auth_method == "credential_wallet":
-                wallet_resp = api_request("get", "/credential-wallets/names", api_base, auth, quiet=True)
-                if wallet_resp is not None:
-                    wallet_rows = validate_payload_or_stop(wallet_resp, validate_credential_wallet_names_response)
-            auth_payload = render_db_auth_inputs_for_method(
-                key_prefix="conn_test",
-                method=auth_method,
-                wallet_rows=wallet_rows,
-                show_credential_user=False,
-            )
-
             if test_clicked:
                 if test_name == "-- Select --":
                     st.error("Please select a connection.")
                 else:
                     cinfo = conns.get(test_name, {})
+                    if not cinfo.get("credential_wallet_name"):
+                        st.error("This connection is missing a credential wallet. Edit the connection before testing.")
+                        st.stop()
                     wallet_required = (str(cinfo.get("protocol", "")).upper() == "TCPS") and not cinfo.get(
                         "allow_tls_without_wallet"
                     )
                     if wallet_required and not cinfo.get("tls_wallet_uploaded_dir"):
                         st.error("Upload a TLS wallet for this connection before testing.")
                         st.stop()
-                    auth_error = validate_db_auth_selection(auth_payload)
-                    if auth_error:
-                        st.error(auth_error)
-                        st.stop()
-                    payload = {
-                        "name": test_name,
-                        "auth": auth_payload,
-                    }
+                    payload = {"name": test_name}
                     data = api_request("post", "/dbconnections/test", api_base, auth, payload=payload)
                     if data:
                         validated = validate_payload_or_stop(data, validate_dbconnection_test_response)

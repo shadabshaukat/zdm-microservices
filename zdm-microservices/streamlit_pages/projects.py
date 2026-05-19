@@ -14,6 +14,7 @@ from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import db_connection_names_for_role
 from streamlit_shared.navigation import render_workflow_back_button
+from streamlit_shared.response_file_form import active_migration_method_options
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -38,14 +39,21 @@ def render(ctx: AppContext) -> None:
         if projects_raw is not None
         else {}
     )
-    source_conn_names = ["-- Select connection --"] + list(
-        db_connection_names_for_role(connections_cache, "source")
-    )
-    target_conn_names = ["-- Select connection --"] + list(
-        db_connection_names_for_role(connections_cache, "target")
-    )
+    source_conn_names = ["-- Select connection --"] + [
+        name
+        for name in db_connection_names_for_role(connections_cache, "source")
+        if connections_cache.get(name, {}).get("credential_wallet_name")
+    ]
+    target_conn_names = ["-- Select connection --"] + [
+        name
+        for name in db_connection_names_for_role(connections_cache, "target")
+        if connections_cache.get(name, {}).get("credential_wallet_name")
+    ]
     if st.session_state.get("target_conn_select") not in target_conn_names:
         st.session_state["target_conn_select"] = "-- Select connection --"
+    migration_methods = active_migration_method_options()
+    if st.session_state.get("project_migration_method") not in migration_methods:
+        st.session_state["project_migration_method"] = next(iter(migration_methods), "")
 
     with page_panel("Create project"):
         with st.form("create_project", border=False):
@@ -55,6 +63,11 @@ def render(ctx: AppContext) -> None:
             )
             source_conn = st.selectbox("Source connection", source_conn_names)
             target_conn = st.selectbox("Target connection", target_conn_names, key="target_conn_select")
+            method_label = st.selectbox(
+                "Migration method",
+                list(migration_methods.keys()),
+                key="project_migration_method",
+            )
             project_clicked = st.form_submit_button("Create project", type="primary")
 
     def valid_project(name: str) -> bool:
@@ -68,7 +81,12 @@ def render(ctx: AppContext) -> None:
         elif project_name in projects_resp:
             st.error("Project already exists. Delete it before creating it again.")
         else:
-            payload = {"name": project_name, "source_connection": source_conn, "target_connection": target_conn}
+            payload = {
+                "name": project_name,
+                "source_connection": source_conn,
+                "target_connection": target_conn,
+                "migration_method": migration_methods[method_label],
+            }
             data = api_request("post", "/projects", api_base, auth, payload=payload)
             if data:
                 validated = validate_payload_or_stop(
