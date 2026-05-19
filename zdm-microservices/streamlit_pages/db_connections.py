@@ -29,7 +29,7 @@ from streamlit_shared.db_types import (
 )
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import render_diagnostics
-from streamlit_shared.wallet_payload import validate_credential_wallet_rows
+from streamlit_shared.wallet_payload import validate_credential_wallet_names_response
 
 
 def render(ctx: AppContext) -> None:
@@ -43,16 +43,16 @@ def render(ctx: AppContext) -> None:
     )
     render_workflow_back_button()
 
-    wallets_resp = api_request("get", "/credential-wallets", api_base, auth, quiet=True)
+    create_flash = st.session_state.pop("conn_create_flash", None)
+    if create_flash:
+        st.success(create_flash)
+
+    wallets_resp = api_request("get", "/credential-wallets/names", api_base, auth, quiet=True)
     wallet_rows = (
-        validate_payload_or_stop(wallets_resp, validate_credential_wallet_rows)
+        validate_payload_or_stop(wallets_resp, validate_credential_wallet_names_response)
         if wallets_resp is not None
         else []
     )
-    wallet_user_by_name = {
-        str(row.get("name")): row.get("credential_username")
-        for row in wallet_rows
-    }
     wallet_names = [str(row.get("name")) for row in wallet_rows if row.get("name")]
     wallet_options = ["-- Select credential wallet --"] + wallet_names
 
@@ -62,12 +62,6 @@ def render(ctx: AppContext) -> None:
         if raw_conns is not None
         else {}
     )
-
-    def wallet_display(name: str) -> str:
-        if name == "-- Select credential wallet --":
-            return name
-        user = wallet_user_by_name.get(name)
-        return f"{name} ({user})" if user else name
 
     tabs = st.tabs(["Create connection", "Saved connections", "Test connection"])
 
@@ -105,7 +99,6 @@ def render(ctx: AppContext) -> None:
             credential_wallet_name = st.selectbox(
                 "Credential wallet",
                 wallet_options,
-                format_func=wallet_display,
                 key="conn_credential_wallet",
             )
             if wallets_resp is None:
@@ -177,7 +170,8 @@ def render(ctx: AppContext) -> None:
                             validate_dbconnection_save_response,
                             expected_name=name,
                         )
-                        st.success(validated["message"])
+                        upload_ok = True
+                        flash_message = validated["message"]
                         if upload_file:
                             upload_resp = api_upload_file(
                                 f"/dbconnections/{name}/tls-wallet",
@@ -188,9 +182,15 @@ def render(ctx: AppContext) -> None:
                             )
                             if upload_resp:
                                 validate_payload_or_stop(upload_resp, validate_tls_wallet_upload_response)
-                                st.success("TLS wallet uploaded.")
-                        render_diagnostics(validated)
-                        st.session_state["last_saved_conn"] = name
+                                flash_message = f"{flash_message} TLS wallet uploaded."
+                            else:
+                                upload_ok = False
+                        if upload_ok:
+                            st.session_state["last_saved_conn"] = name
+                            st.session_state["conn_create_flash"] = flash_message
+                            st.rerun()
+                        else:
+                            render_diagnostics(validated)
 
     with tabs[1]:
         with page_panel("Saved Connections"):
@@ -201,14 +201,14 @@ def render(ctx: AppContext) -> None:
             elif not conns:
                 st.info("No connections saved yet.")
             else:
-                editor_rows = _connection_editor_rows(conns, wallet_user_by_name)
+                editor_rows = _connection_editor_rows(conns)
                 wallet_editor_options = _wallet_options_for_saved_connections(wallet_names, conns)
                 edited_df = st.data_editor(
                     pd.DataFrame(editor_rows),
                     hide_index=True,
                     num_rows="fixed",
                     width="stretch",
-                    disabled=["Name", "Role", "DB Platform", "Credential User", "Status"],
+                    disabled=["Name", "Role", "DB Platform", "Status"],
                     column_config={
                         "Name": st.column_config.TextColumn("Name", pinned=True),
                         "Role": st.column_config.TextColumn("Role"),
@@ -218,7 +218,6 @@ def render(ctx: AppContext) -> None:
                         "Service": st.column_config.TextColumn("Service", required=True),
                         "Protocol": st.column_config.SelectboxColumn("Protocol", options=["TCP", "TCPS"], required=True),
                         "Credential Wallet": st.column_config.SelectboxColumn("Credential Wallet", options=wallet_editor_options, required=True),
-                        "Credential User": st.column_config.TextColumn("Credential User"),
                         "TLS without wallet": st.column_config.CheckboxColumn("TLS without wallet"),
                         "Status": st.column_config.TextColumn("Status"),
                         "Delete": st.column_config.CheckboxColumn("Delete"),
@@ -334,10 +333,7 @@ def _wallet_options_for_saved_connections(wallet_names: list[str], conns: Mappin
     return options
 
 
-def _connection_editor_rows(
-    conns: Mapping[str, Mapping[str, Any]],
-    wallet_user_by_name: Mapping[str, Any],
-) -> list[dict[str, Any]]:
+def _connection_editor_rows(conns: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for name, info in conns.items():
         credential_wallet = str(info.get("credential_wallet_name") or "-- Select credential wallet --")
@@ -351,7 +347,6 @@ def _connection_editor_rows(
                 "Service": str(info.get("service_name") or ""),
                 "Protocol": str(info.get("protocol") or "TCP").upper(),
                 "Credential Wallet": credential_wallet,
-                "Credential User": str(wallet_user_by_name.get(credential_wallet) or ""),
                 "TLS without wallet": bool(info.get("allow_tls_without_wallet")),
                 "Status": "Ready" if credential_wallet != "-- Select credential wallet --" else "Needs wallet",
                 "Delete": False,

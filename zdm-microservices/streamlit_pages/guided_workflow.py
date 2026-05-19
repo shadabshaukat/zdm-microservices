@@ -112,57 +112,118 @@ def _render_styles() -> None:
         <style>
         div[data-testid="stVerticalBlock"][class*="st-key-workflow-phase-"] {
             border-color: #E2E8F0 !important;
-            box-shadow: 0 2px 4px rgba(30, 41, 59, 0.04), 0 1px 2px rgba(30, 41, 59, 0.04);
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%) !important;
+            box-shadow: 0 1px 2px rgba(30, 41, 59, 0.035) !important;
         }
-        a.zeus-workflow-card {
-            display: flex;
-            flex-direction: column;
-            min-height: 156px;
-            margin: 0 0 0.72rem 0;
-            padding: 1.05rem 1.1rem;
-            border: 1px solid #E2E8F0;
+
+        .zeus-workflow-timeline {
+            display: grid;
+            gap: 0;
+        }
+
+        .zeus-workflow-step-row {
+            position: relative;
+            display: grid;
+            grid-template-columns: 2.35rem minmax(0, 1fr);
+            column-gap: 0.78rem;
+            min-height: 132px;
+            padding: 0.82rem 0.36rem 0.95rem 0.1rem;
+            border-bottom: 1px solid #E2E8F0;
             border-radius: 8px;
-            background: #FFFFFF;
-            box-shadow: 0 1px 2px rgba(30, 41, 59, 0.04);
             color: inherit;
             text-decoration: none;
+            transition: background 120ms ease, transform 120ms ease;
         }
-        a.zeus-workflow-card:hover {
-            border-color: #93C5FD;
+
+        .zeus-workflow-step-row,
+        .zeus-workflow-step-row * {
+            text-decoration: none !important;
+        }
+
+        .zeus-workflow-step-row::before {
+            content: "";
+            position: absolute;
+            left: 1.17rem;
+            top: 3.08rem;
+            bottom: -0.4rem;
+            width: 1px;
+            background: #CBD5E1;
+        }
+
+        .zeus-workflow-step-row--last {
+            border-bottom: 0;
+        }
+
+        .zeus-workflow-step-row--last::before {
+            display: none;
+        }
+
+        .zeus-workflow-step-row:hover {
             background: #F8FBFF;
-            box-shadow: 0 3px 6px rgba(30, 41, 59, 0.07);
+            transform: translateX(2px);
             text-decoration: none;
         }
-        a.zeus-workflow-card:focus-visible {
+
+        .zeus-workflow-step-row:focus-visible {
             outline: 3px solid rgba(37, 99, 235, 0.24);
             outline-offset: 2px;
         }
-        .zeus-workflow-step {
+
+        .zeus-workflow-step-marker {
+            position: relative;
+            z-index: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 2.35rem;
+            height: 2.35rem;
+            border: 1px solid #BFDBFE;
+            border-radius: 999px;
+            background: #EFF6FF;
+            color: #1D4ED8;
             font-size: 0.78rem;
-            line-height: 1.15;
-            font-weight: 720;
-            color: #64748B;
-            margin-bottom: 0.34rem;
+            font-weight: 800;
+            line-height: 1;
+            letter-spacing: 0;
         }
-        .zeus-workflow-title {
+
+        .zeus-workflow-step-content {
+            min-width: 0;
+            padding-top: 0.08rem;
+        }
+
+        .zeus-workflow-step-title {
+            display: block;
+            margin: 0 0 0.46rem 0;
+            color: #1E293B;
             font-size: 1.18rem;
             line-height: 1.22;
             font-weight: 800;
-            color: #1E293B;
-            margin-bottom: 0.46rem;
         }
-        .zeus-workflow-description {
+
+        .zeus-workflow-step-description {
+            display: block;
+            margin: 0 0 0.72rem 0;
+            color: #64748B;
             font-size: 0.95rem;
             line-height: 1.42;
-            color: #64748B;
-            margin-bottom: 0.72rem;
         }
-        .zeus-workflow-action {
-            margin-top: auto;
+
+        .zeus-workflow-step-action {
+            display: inline-flex;
+            align-items: center;
+            color: #2563EB;
             font-size: 0.92rem;
             line-height: 1.25;
             font-weight: 720;
-            color: #2563EB;
+        }
+
+        @media (max-width: 700px) {
+            .zeus-workflow-step-row {
+                min-height: 0;
+                padding-top: 0.88rem;
+                padding-bottom: 1rem;
+            }
         }
         </style>
         """,
@@ -170,16 +231,33 @@ def _render_styles() -> None:
     )
 
 
-def _render_step_card(step: WorkflowStep) -> None:
+def _step_row_markup(step: WorkflowStep) -> str:
     href = section_href(step["section"], guided=True)
+    return f"""
+        <a class="zeus-workflow-step-row" href="{html.escape(href, quote=True)}" target="_self" role="listitem">
+            <span class="zeus-workflow-step-marker">{html.escape(step["number"])}</span>
+            <span class="zeus-workflow-step-content">
+                <span class="zeus-workflow-step-title">{html.escape(step["title"])}</span>
+                <span class="zeus-workflow-step-description">{html.escape(step["description"])}</span>
+                <span class="zeus-workflow-step-action">{html.escape(step["action"])} -&gt;</span>
+            </span>
+        </a>
+    """
+
+
+def _render_step_timeline(steps: tuple[WorkflowStep, ...]) -> None:
+    rows = []
+    last_index = len(steps) - 1
+    for index, step in enumerate(steps):
+        row = _step_row_markup(step)
+        if index == last_index:
+            row = row.replace("zeus-workflow-step-row", "zeus-workflow-step-row zeus-workflow-step-row--last", 1)
+        rows.append(row)
     st.markdown(
         f"""
-        <a class="zeus-workflow-card" href="{html.escape(href, quote=True)}" target="_self">
-            <div class="zeus-workflow-step">Step {html.escape(step["number"])}</div>
-            <div class="zeus-workflow-title">{html.escape(step["title"])}</div>
-            <div class="zeus-workflow-description">{html.escape(step["description"])}</div>
-            <div class="zeus-workflow-action">{html.escape(step["action"])} -&gt;</div>
-        </a>
+        <div class="zeus-workflow-timeline" role="list">
+            {''.join(rows)}
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -203,5 +281,4 @@ def render(ctx: AppContext) -> None:
     for index, (column, group) in enumerate(zip(columns, WORKFLOW_GROUPS), start=1):
         with column:
             with page_panel(str(group["phase"]), key=f"workflow-phase-{index}"):
-                for step in group["steps"]:  # type: ignore[index]
-                    _render_step_card(step)
+                _render_step_timeline(group["steps"])  # type: ignore[arg-type]

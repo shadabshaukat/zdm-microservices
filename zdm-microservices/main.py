@@ -490,7 +490,7 @@ def _connection_credential_wallet_ready(wallet_name: Any) -> bool:
     if not name:
         return False
     wallet_path = resolve_cred_wallet_path(name)
-    return os.path.isdir(wallet_path) and bool(_credential_wallet_username(wallet_path))
+    return os.path.isdir(wallet_path) and bool(_credential_wallet_username_for_validation(name))
 
 
 def _validate_connection_credential_wallet_for_save(payload: Dict[str, Any]) -> None:
@@ -2261,6 +2261,95 @@ def _validate_wallet_name(name: str) -> str:
     return name
 
 
+def _credential_wallet_metadata_file_path() -> str:
+    target_dir = os.path.join(MIGRATION_BASE, "wallets")
+    os.makedirs(target_dir, exist_ok=True)
+    return os.path.join(target_dir, "credential_wallets.json")
+
+
+def load_credential_wallet_metadata() -> Dict[str, Dict[str, Any]]:
+    payload = _load_json_file(_credential_wallet_metadata_file_path())
+    wallets = payload.get("wallets") if isinstance(payload, dict) else None
+    if not isinstance(wallets, dict):
+        return {}
+
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw_record in wallets.items():
+        try:
+            name = _validate_wallet_name(str(raw_name))
+        except HTTPException:
+            continue
+        record = raw_record if isinstance(raw_record, dict) else {}
+        credential_username = record.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        metadata[name] = {
+            "name": name,
+            "credential_username": credential_username or None,
+        }
+    return metadata
+
+
+def save_credential_wallet_metadata(metadata: Dict[str, Dict[str, Any]]):
+    wallets: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw_record in sorted(metadata.items()):
+        try:
+            name = _validate_wallet_name(str(raw_name))
+        except HTTPException:
+            continue
+        record = raw_record if isinstance(raw_record, dict) else {}
+        credential_username = record.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        wallets[name] = {
+            "name": name,
+            "credential_username": credential_username or None,
+        }
+    _save_json_file(_credential_wallet_metadata_file_path(), {"wallets": wallets})
+
+
+def _credential_wallet_metadata_value(wallet_name: str) -> Tuple[bool, Optional[str]]:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    if name not in metadata:
+        return False, None
+    credential_username = metadata[name].get("credential_username")
+    return True, credential_username if isinstance(credential_username, str) and credential_username else None
+
+
+def _upsert_credential_wallet_metadata(wallet_name: str, credential_username: Optional[str]) -> None:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    metadata[name] = {
+        "name": name,
+        "credential_username": (
+            credential_username.strip()
+            if isinstance(credential_username, str) and credential_username.strip()
+            else None
+        ),
+    }
+    save_credential_wallet_metadata(metadata)
+
+
+def _remove_credential_wallet_metadata(wallet_name: str) -> None:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    if name in metadata:
+        metadata.pop(name, None)
+        save_credential_wallet_metadata(metadata)
+
+
+def _credential_wallet_username_for_validation(wallet_name: str) -> Optional[str]:
+    name = _validate_wallet_name(wallet_name)
+    found, credential_username = _credential_wallet_metadata_value(name)
+    if found:
+        return credential_username
+    wallet_path = resolve_cred_wallet_path(name)
+    credential_username = _credential_wallet_username(wallet_path)
+    _upsert_credential_wallet_metadata(name, credential_username)
+    return credential_username
+
+
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
     pname = resolve_project_name(project, required=required)
     target_dir = get_scripts_dir(pname, required=False)
@@ -2966,6 +3055,82 @@ def _credential_wallet_username(wallet_path: str) -> Optional[str]:
     return users[0] if users else None
 
 
+def _credential_wallet_api_record(
+    name: str,
+    path: str,
+    credential_username: Optional[str],
+    endpoint: str = "GET /credential-wallets",
+) -> Dict[str, Any]:
+    record = {
+        "name": _validate_wallet_name(name),
+        "path": str(path or ""),
+        "credential_username": credential_username,
+    }
+    _api_record_keys(record, endpoint, record["name"], {"name", "path", "credential_username"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    _require_api_text(record, endpoint, record["name"], "path")
+    _optional_api_text(record, endpoint, record["name"], "credential_username")
+    return record
+
+
+def _credential_wallet_name_api_record(name: str, endpoint: str = "GET /credential-wallets/names") -> Dict[str, str]:
+    record = {"name": _validate_wallet_name(name)}
+    _api_record_keys(record, endpoint, record["name"], {"name"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    return record
+
+
+def _credential_wallet_path_api_record(
+    name: str,
+    path: str,
+    endpoint: str = "GET /credential-wallets/paths",
+) -> Dict[str, str]:
+    record = {"name": _validate_wallet_name(name), "path": str(path or "")}
+    _api_record_keys(record, endpoint, record["name"], {"name", "path"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    _require_api_text(record, endpoint, record["name"], "path")
+    return record
+
+
+def _credential_wallet_dirs() -> List[Tuple[str, str]]:
+    base_dir = get_cred_wallets_dir()
+    wallets: List[Tuple[str, str]] = []
+    for name in sorted(os.listdir(base_dir)):
+        try:
+            safe_name = _validate_wallet_name(name)
+        except HTTPException:
+            continue
+        path = os.path.join(base_dir, safe_name)
+        if os.path.isdir(path):
+            wallets.append((safe_name, path))
+    return wallets
+
+
+def _credential_wallets_api_response() -> Dict[str, List[Dict[str, Any]]]:
+    metadata = load_credential_wallet_metadata()
+    wallets = []
+    for name, path in _credential_wallet_dirs():
+        wallet_metadata = metadata.get(name, {})
+        credential_username = wallet_metadata.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        wallets.append(_credential_wallet_api_record(name, path, credential_username))
+    return {"wallets": wallets}
+
+
+def _credential_wallet_names_api_response() -> Dict[str, List[Dict[str, str]]]:
+    return {"wallets": [_credential_wallet_name_api_record(name) for name, _path in _credential_wallet_dirs()]}
+
+
+def _credential_wallet_paths_api_response() -> Dict[str, List[Dict[str, str]]]:
+    return {
+        "wallets": [
+            _credential_wallet_path_api_record(name, path)
+            for name, path in _credential_wallet_dirs()
+        ]
+    }
+
+
 @app.get("/tls-wallets")
 def list_tls_wallets(username: str = Depends(verify_credentials)):
     base_dir = get_tls_wallets_dir()
@@ -2979,35 +3144,17 @@ def list_tls_wallets(username: str = Depends(verify_credentials)):
 
 @app.get("/credential-wallets")
 def list_credential_wallets(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name, "path": path, "credential_username": _credential_wallet_username(path)})
-    return {"wallets": wallets}
+    return _credential_wallets_api_response()
 
 
 @app.get("/credential-wallets/names")
 def list_credential_wallet_names(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name})
-    return {"wallets": wallets}
+    return _credential_wallet_names_api_response()
 
 
 @app.get("/credential-wallets/paths")
 def list_credential_wallet_paths(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name, "path": path})
-    return {"wallets": wallets}
+    return _credential_wallet_paths_api_response()
 
 
 @app.delete("/credential-wallets/{name}")
@@ -3017,6 +3164,7 @@ def delete_credential_wallet(name: str, username: str = Depends(verify_credentia
     if not os.path.isdir(wallet_path):
         raise HTTPException(status_code=404, detail=f"Credential wallet '{name}' not found")
     shutil.rmtree(wallet_path)
+    _remove_credential_wallet_metadata(name)
     return {"status": "success", "message": f"Credential wallet '{name}' deleted", "name": name}
 
 @app.post("/wallets/ora-pki")
@@ -3045,6 +3193,7 @@ def create_wallet(params: WalletFileParams, username: str = Depends(verify_crede
         error_output = result.stderr.strip()
 
         if result.returncode == 0:
+            _upsert_credential_wallet_metadata(params.wallet_name, None)
             return {"status": "success", "output": output}
         else:
             raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
@@ -3065,7 +3214,15 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
     user = params.user.strip()
     if not user:
         raise HTTPException(status_code=400, detail="user is required")
-    if _credential_wallet_username(wallet_path):
+    metadata_found, metadata_username = _credential_wallet_metadata_value(params.wallet_name)
+    if metadata_found and metadata_username:
+        raise HTTPException(
+            status_code=409,
+            detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
+        )
+    existing_username = None if metadata_found else _credential_wallet_username(wallet_path)
+    if existing_username:
+        _upsert_credential_wallet_metadata(params.wallet_name, existing_username)
         raise HTTPException(
             status_code=409,
             detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
@@ -3092,6 +3249,7 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
         error_output = result.stderr.strip()
 
         if result.returncode == 0:
+            _upsert_credential_wallet_metadata(params.wallet_name, user)
             return {"status": "success", "output": output}
         else:
             raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
