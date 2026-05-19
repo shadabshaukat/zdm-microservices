@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 
 DATABASE_DISCOVERY_STATUSES = {
+    "informational",
     "passed",
     "difference",
     "source_only",

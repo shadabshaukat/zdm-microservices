@@ -7,6 +7,7 @@ import yaml
 
 DISCOVERY_RULES_PATH = Path(__file__).resolve().parent / "definitions" / "discovery" / "comparison_rules.yaml"
 VALID_STATUSES = {
+    "informational",
     "passed",
     "difference",
     "source_only",
@@ -103,6 +104,7 @@ def _validate_rule(source_name: str, method: str, section_key: str, rule: Any) -
         raise RuntimeError(f"{method}.{section_key}.{rule_id}.compare is required")
     operator = str(compare.get("operator") or "").strip()
     if operator not in {
+        "informational",
         "equals",
         "set_difference",
         "keyed_record_compare",
@@ -182,7 +184,21 @@ def _evaluate_rule(
         return [_evaluate_numeric(rule_id, rule, source, target)]
     if operator == "target_gte_source":
         return [_evaluate_target_gte_source(rule_id, rule, source, target)]
+    if operator == "informational":
+        return [_evaluate_informational(rule_id, rule, source, target)]
     raise ValueError(f"Unsupported discovery comparison operator: {operator}")
+
+
+def _evaluate_informational(
+    rule_id: str,
+    rule: Mapping[str, Any],
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> dict[str, Any]:
+    compare = rule["compare"]
+    source_value = _extract_path(source, str(compare["source_path"]))
+    target_value = _extract_path(target, str(compare["target_path"]))
+    return _row(rule_id, rule, source_value, target_value, "informational", {"severity": "none"})
 
 
 def _evaluate_equals(

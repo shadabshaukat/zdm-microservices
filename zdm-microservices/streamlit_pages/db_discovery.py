@@ -19,6 +19,7 @@ from streamlit_shared.ui import render_diagnostics
 
 
 STATUS_LABELS = {
+    "informational": "Information",
     "passed": "Passed",
     "difference": "Difference",
     "source_only": "Only in source",
@@ -55,6 +56,7 @@ def render(ctx: AppContext) -> None:
         st.info("Create a project before running Database Discovery.")
         return
 
+    project_options = [""] + project_names
     with page_header_actions(
         "Design Migration",
         "Database Discovery",
@@ -65,13 +67,19 @@ def render(ctx: AppContext) -> None:
         with selector_col:
             selected_project = st.selectbox(
                 "Project",
-                project_names,
+                options=project_options,
+                index=0,
+                format_func=lambda value: value or "",
                 key="database_discovery_project",
                 label_visibility="collapsed",
             )
         with refresh_col:
-            refresh_clicked = st.button("Refresh", type="primary", width="stretch")
+            refresh_clicked = st.button("Refresh", type="primary", width="stretch", disabled=not selected_project)
     render_workflow_back_button()
+
+    if not selected_project:
+        st.info("Select a project to review Database Discovery.")
+        return
 
     if refresh_clicked:
         discovery_raw = api_request(
@@ -133,7 +141,11 @@ def render(ctx: AppContext) -> None:
 
     for index, section in enumerate(visible_sections, start=1):
         with tabs[index]:
-            _render_rows(section.get("rows", []), key=f"section_{section.get('key')}")
+            _render_rows(
+                section.get("rows", []),
+                key=f"section_{section.get('key')}",
+                compact_table=section.get("key") == "directories",
+            )
 
     with tabs[-1]:
         render_diagnostics(discovery)
@@ -171,6 +183,7 @@ def _render_snapshot_card(side: str, snapshot: Mapping[str, Any]) -> None:
         summary = snapshot.get("summary") if isinstance(snapshot.get("summary"), Mapping) else {}
         chips = []
         for label, key in (
+            ("DB unique name", "database_unique_name"),
             ("Platform", "platform_type"),
             ("Container", "container_label"),
             ("Role", "database_role"),
@@ -184,14 +197,23 @@ def _render_snapshot_card(side: str, snapshot: Mapping[str, Any]) -> None:
             st.markdown(" ".join(chips))
 
 
-def _render_rows(rows: List[Mapping[str, Any]], *, key: str) -> None:
+def _render_rows(rows: List[Mapping[str, Any]], *, key: str, compact_table: bool = False) -> None:
     if not rows:
         st.caption("No comparison rows were returned.")
         return
     display_rows = [_row_to_display(row) for row in rows]
-    selected_index = _render_discovery_dataframe(display_rows, key=key)
+    selected_index = _render_discovery_dataframe(
+        display_rows,
+        key=key,
+        compact_table=compact_table,
+        informational_table=_all_rows_informational(rows),
+    )
     if selected_index is not None and 0 <= selected_index < len(rows):
         _render_row_details(rows[selected_index])
+
+
+def _all_rows_informational(rows: List[Mapping[str, Any]]) -> bool:
+    return bool(rows) and all(row.get("status") == "informational" for row in rows)
 
 
 def _render_discovery_styles() -> None:
@@ -227,8 +249,19 @@ def _render_discovery_styles() -> None:
     )
 
 
-def _render_discovery_dataframe(rows: List[Mapping[str, Any]], *, key: str) -> int | None:
-    columns = ["Check", "Source", "Target", "Status", "Details", "Severity", "Message", "Guidance"]
+def _render_discovery_dataframe(
+    rows: List[Mapping[str, Any]],
+    *,
+    key: str,
+    compact_table: bool = False,
+    informational_table: bool = False,
+) -> int | None:
+    if informational_table:
+        columns = ["Check", "Source", "Target"]
+    elif compact_table:
+        columns = ["Check", "Status", "Details", "Severity", "Message", "Guidance"]
+    else:
+        columns = ["Check", "Source", "Target", "Status", "Details", "Severity", "Message", "Guidance"]
     df = pd.DataFrame(rows).reindex(columns=columns)
     styled_df = df.style.apply(_discovery_row_style, axis=1)
     state = st.dataframe(
@@ -305,10 +338,7 @@ def _discovery_row_style(row: pd.Series) -> list[str]:
     if status == "Migration readiness issue":
         background = "#FEF2F2"
         color = "#7F1D1D"
-    elif status in {"Difference", "Only in source", "Only in target"}:
-        background = "#EFF6FF"
-        color = "#1E3A8A"
-    elif severity in {"high", "medium"}:
+    elif severity in {"critical", "high"}:
         background = "#FFFBEB"
         color = "#78350F"
     else:

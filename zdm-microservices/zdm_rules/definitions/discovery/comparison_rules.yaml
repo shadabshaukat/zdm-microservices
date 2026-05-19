@@ -6,17 +6,26 @@ methods:
       summary:
         label: Summary
         rules:
-          - id: database_name_match
+          - id: database_name
             label: Database name
             compare:
               source_path: db_info.NAME
               target_path: db_info.NAME
-              operator: equals
-            on_fail:
-              status: difference
-              severity: low
-              message: Source and target database names differ.
-              guidance: Confirm the selected project connections before creating migration artifacts.
+              operator: informational
+
+          - id: database_unique_name
+            label: DB unique name
+            compare:
+              source_path: db_info.DB_UNIQUE_NAME
+              target_path: db_info.DB_UNIQUE_NAME
+              operator: informational
+
+          - id: connected_container
+            label: Connected container
+            compare:
+              source_path: connected_container.display
+              target_path: connected_container.display
+              operator: informational
 
       schemas:
         label: Schemas

@@ -1649,19 +1649,68 @@ def get_sql_bucket(section: str) -> Dict[str, str]:
     return bucket if isinstance(bucket, dict) else {}
 
 
-def derive_container_label(snapshot: Dict[str, Any]) -> str:
+def _snapshot_dict_value(payload: Dict[str, Any], key: str) -> Any:
+    if key in payload:
+        return payload[key]
+    key_upper = key.upper()
+    for item_key, item_value in payload.items():
+        if str(item_key).upper() == key_upper:
+            return item_value
+    return None
+
+
+def derive_connected_container(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     ctx = snapshot.get("container_context") or {}
     curr = snapshot.get("current_container_details") or {}
     cont = snapshot.get("container_info") or {}
-    con_name = ctx.get("CON_NAME") or curr.get("NAME") or cont.get("CONTAINER_NAME") or ""
+    db_info = snapshot.get("db_info") or {}
+
+    ctx = ctx if isinstance(ctx, dict) else {}
+    curr = curr if isinstance(curr, dict) else {}
+    cont = cont if isinstance(cont, dict) else {}
+    db_info = db_info if isinstance(db_info, dict) else {}
+
+    db_name = _snapshot_dict_value(db_info, "NAME") or _snapshot_dict_value(db_info, "DB_NAME")
+    cdb_flag = str(_snapshot_dict_value(db_info, "CDB") or "").strip().upper()
+    con_name = (
+        _snapshot_dict_value(ctx, "CON_NAME")
+        or _snapshot_dict_value(curr, "NAME")
+        or _snapshot_dict_value(cont, "CONTAINER_NAME")
+        or ""
+    )
+    cdb_name = _snapshot_dict_value(ctx, "CDB_NAME") or _snapshot_dict_value(curr, "CDB_NAME") or db_name
     con_name_up = str(con_name).upper()
-    if con_name_up == "CDB$ROOT":
-        return "CDB$ROOT"
-    if con_name_up == "PDB$SEED":
-        return "PDB$SEED"
-    if con_name_up:
-        return f"PDB: {con_name_up}"
-    return "Unknown container"
+    cdb_name_display = str(cdb_name or "").strip()
+
+    if cdb_flag == "NO":
+        display = f"Non-CDB: {db_name}" if db_name else "Non-CDB"
+        container_type = "NON_CDB"
+    elif con_name_up == "CDB$ROOT":
+        display = f"CDB root: {cdb_name_display}" if cdb_name_display else "CDB root"
+        container_type = "CDB_ROOT"
+    elif con_name_up == "PDB$SEED":
+        display = "PDB seed: PDB$SEED"
+        container_type = "PDB_SEED"
+    elif con_name_up:
+        display = f"PDB: {con_name_up}"
+        container_type = "PDB"
+    else:
+        display = "Unknown container"
+        container_type = "UNKNOWN"
+
+    return {
+        "display": display,
+        "container_name": con_name_up or None,
+        "cdb_name": cdb_name_display or None,
+        "container_type": container_type,
+    }
+
+
+def derive_container_label(snapshot: Dict[str, Any]) -> str:
+    connected_container = snapshot.get("connected_container")
+    if isinstance(connected_container, dict) and connected_container.get("display"):
+        return str(connected_container["display"])
+    return str(derive_connected_container(snapshot).get("display") or "Unknown container")
 
 
 def derive_platform_type(snapshot: Dict[str, Any]) -> str:
@@ -1901,6 +1950,7 @@ def _collect_db_snapshot(
         connection.close()
 
     # derived fields
+    snapshot["connected_container"] = derive_connected_container(snapshot)
     snapshot["container_label"] = derive_container_label(snapshot)
     snapshot["platform_type"] = derive_platform_type(snapshot)
     snapshot["raw_queries"] = raw_queries
@@ -2050,6 +2100,17 @@ def _write_method_discovery_files(
     return {"snapshot": str(snap_path), "raw": str(raw_path)}
 
 
+def _normalize_discovery_snapshot_for_api(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(snapshot)
+    if not isinstance(normalized.get("connected_container"), dict):
+        normalized["connected_container"] = derive_connected_container(normalized)
+    if not normalized.get("container_label"):
+        normalized["container_label"] = derive_container_label(normalized)
+    if not normalized.get("platform_type"):
+        normalized["platform_type"] = derive_platform_type(normalized)
+    return normalized
+
+
 def _latest_method_discovery_snapshot(connection_name: str, migration_method: str) -> Dict[str, Any]:
     method_dir = _discovery_method_dir(connection_name, migration_method, create=False)
     if not method_dir.exists():
@@ -2064,6 +2125,7 @@ def _latest_method_discovery_snapshot(connection_name: str, migration_method: st
         return {"status": "failed", "file": str(latest), "snapshot": None, "message": f"Discovery snapshot could not be read: {exc}"}
     if not isinstance(snapshot, dict):
         return {"status": "failed", "file": str(latest), "snapshot": None, "message": "Discovery snapshot is not a JSON object."}
+    snapshot = _normalize_discovery_snapshot_for_api(snapshot)
     return {"status": "available", "file": str(latest), "snapshot": snapshot}
 
 
@@ -2102,11 +2164,12 @@ def _snapshot_summary(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     db_info = snapshot.get("db_info") if isinstance(snapshot.get("db_info"), dict) else {}
     role_info = snapshot.get("db_role_open_mode_base") if isinstance(snapshot.get("db_role_open_mode_base"), dict) else {}
     rac_info = snapshot.get("rac_info") if isinstance(snapshot.get("rac_info"), dict) else {}
+    connected_container = snapshot.get("connected_container") if isinstance(snapshot.get("connected_container"), dict) else {}
     return {
         "database_name": db_info.get("NAME") or db_info.get("name"),
         "database_unique_name": db_info.get("DB_UNIQUE_NAME") or db_info.get("db_unique_name"),
         "platform_type": snapshot.get("platform_type"),
-        "container_label": snapshot.get("container_label"),
+        "container_label": connected_container.get("display") or snapshot.get("container_label"),
         "database_role": role_info.get("DATABASE_ROLE") or role_info.get("database_role"),
         "open_mode": role_info.get("OPEN_MODE") or role_info.get("open_mode"),
         "rac": rac_info.get("RAC") or rac_info.get("rac"),
