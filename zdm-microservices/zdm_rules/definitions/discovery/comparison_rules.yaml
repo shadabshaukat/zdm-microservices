@@ -61,12 +61,25 @@ methods:
       directories:
         label: Directories
         rules:
-          - id: directory_presence
+          - id: directory_paths
             label: Directories
             compare:
-              source_path: directories.DIRECTORY_NAME
-              target_path: directories.DIRECTORY_NAME
-              operator: set_difference
+              source_path: directories
+              target_path: directories
+              operator: keyed_record_compare
+              key_field: DIRECTORY_NAME
+              label_template: "Directory: {key}"
+              value_field: DIRECTORY_PATH
+              fields:
+                - key: DIRECTORY_PATH
+                  label: Directory path
+                  format: text
+                  compare: true
+            on_fail:
+              status: difference
+              severity: medium
+              message: Directory paths differ between source and target.
+              guidance: Review directory object path expectations for Data Pump and application access.
             on_source_only:
               status: difference
               severity: medium
@@ -120,12 +133,25 @@ methods:
       profiles:
         label: Profiles
         rules:
-          - id: source_custom_profiles
-            label: Custom source profiles
+          - id: custom_profile_definitions
+            label: Custom profiles
             compare:
-              source_path: extras.logical_common.db_profiles.PROFILE
-              target_path: extras.logical_common.db_profiles.PROFILE
-              operator: set_difference
+              source_path: extras.logical_common.db_profiles
+              target_path: extras.logical_common.db_profiles
+              operator: keyed_record_compare
+              key_field: PROFILE
+              label_template: "Profile: {key}"
+              value_field: PROFILE
+              fields:
+                - key: PROFILE_DDL
+                  label: Profile DDL
+                  format: sql
+                  compare: true
+            on_fail:
+              status: readiness_issue
+              severity: high
+              message: Custom profile definitions differ between source and target.
+              guidance: Review profile DDL and plan how these profiles will be recreated or mapped on the target.
             on_source_only:
               status: readiness_issue
               severity: high

@@ -356,7 +356,7 @@ def _database_discovery_section(payload: Any, endpoint: str, index: int) -> Dict
 def _database_discovery_row(payload: Any, endpoint: str, label: str) -> Dict[str, Any]:
     if not isinstance(payload, Mapping):
         _raise_contract_error(endpoint, f"{label} must be an object")
-    _exact_keys(payload, endpoint, {"key", "label", "source", "target", "status", "severity", "message", "guidance"})
+    _exact_keys(payload, endpoint, {"key", "label", "source", "target", "status", "severity", "message", "guidance", "details"})
     _text(payload, endpoint, "key")
     _text(payload, endpoint, "label")
     if payload.get("status") not in DATABASE_DISCOVERY_STATUSES:
@@ -364,6 +364,9 @@ def _database_discovery_row(payload: Any, endpoint: str, label: str) -> Dict[str
     _text(payload, endpoint, "severity", allow_empty=True)
     _text(payload, endpoint, "message", allow_empty=True)
     _text(payload, endpoint, "guidance", allow_empty=True)
+    details = payload.get("details")
+    if not isinstance(details, list):
+        _raise_contract_error(endpoint, f"{label}.details must be a list")
     return {
         "key": payload["key"],
         "label": payload["label"],
@@ -373,6 +376,31 @@ def _database_discovery_row(payload: Any, endpoint: str, label: str) -> Dict[str
         "severity": payload["severity"],
         "message": payload["message"],
         "guidance": payload["guidance"],
+        "details": [
+            _database_discovery_detail(detail, endpoint, f"{label}.details[{detail_index}]")
+            for detail_index, detail in enumerate(details, start=1)
+        ],
+    }
+
+
+def _database_discovery_detail(payload: Any, endpoint: str, label: str) -> Dict[str, Any]:
+    if not isinstance(payload, Mapping):
+        _raise_contract_error(endpoint, f"{label} must be an object")
+    _exact_keys(payload, endpoint, {"side", "label", "format", "value"})
+    _text(payload, endpoint, "side")
+    _text(payload, endpoint, "label")
+    _text(payload, endpoint, "format")
+    if payload.get("side") not in {"source", "target"}:
+        _raise_contract_error(endpoint, f"{label}.side is invalid")
+    if payload.get("format") not in {"text", "sql", "json"}:
+        _raise_contract_error(endpoint, f"{label}.format is invalid")
+    if "value" not in payload:
+        _raise_contract_error(endpoint, f"{label}.value is required")
+    return {
+        "side": payload["side"],
+        "label": payload["label"],
+        "format": payload["format"],
+        "value": payload.get("value"),
     }
 
 

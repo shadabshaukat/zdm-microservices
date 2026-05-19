@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from typing import Any, Dict, List, Mapping
 
 import pandas as pd
@@ -25,6 +26,11 @@ STATUS_LABELS = {
     "readiness_issue": "Migration readiness issue",
     "not_applicable": "Not applicable",
     "not_returned": "Not returned",
+}
+
+PROFILE_DDL_DETAIL_TITLES = {
+    "source": "Source profile DDL",
+    "target": "Target profile DDL",
 }
 
 
@@ -121,13 +127,13 @@ def render(ctx: AppContext) -> None:
 
     with tabs[0]:
         if readiness_rows:
-            _render_rows(readiness_rows)
+            _render_rows(readiness_rows, key="readiness")
         else:
             st.success("No migration readiness issues were returned for the latest snapshots.")
 
     for index, section in enumerate(visible_sections, start=1):
         with tabs[index]:
-            _render_rows(section.get("rows", []))
+            _render_rows(section.get("rows", []), key=f"section_{section.get('key')}")
 
     with tabs[-1]:
         render_diagnostics(discovery)
@@ -178,12 +184,14 @@ def _render_snapshot_card(side: str, snapshot: Mapping[str, Any]) -> None:
             st.markdown(" ".join(chips))
 
 
-def _render_rows(rows: List[Mapping[str, Any]]) -> None:
+def _render_rows(rows: List[Mapping[str, Any]], *, key: str) -> None:
     if not rows:
         st.caption("No comparison rows were returned.")
         return
     display_rows = [_row_to_display(row) for row in rows]
-    _render_discovery_dataframe(display_rows)
+    selected_index = _render_discovery_dataframe(display_rows, key=key)
+    if selected_index is not None and 0 <= selected_index < len(rows):
+        _render_row_details(rows[selected_index])
 
 
 def _render_discovery_styles() -> None:
@@ -219,20 +227,76 @@ def _render_discovery_styles() -> None:
     )
 
 
-def _render_discovery_dataframe(rows: List[Mapping[str, Any]]) -> None:
-    columns = ["Check", "Source", "Target", "Status", "Severity", "Message", "Guidance"]
+def _render_discovery_dataframe(rows: List[Mapping[str, Any]], *, key: str) -> int | None:
+    columns = ["Check", "Source", "Target", "Status", "Details", "Severity", "Message", "Guidance"]
     df = pd.DataFrame(rows).reindex(columns=columns)
     styled_df = df.style.apply(_discovery_row_style, axis=1)
-    st.dataframe(
+    state = st.dataframe(
         styled_df,
         hide_index=True,
         width="stretch",
+        key=f"database_discovery_{key}",
+        on_select="rerun",
+        selection_mode="single-row",
         column_config={
             "Check": st.column_config.TextColumn("Check", pinned=True),
             "Status": st.column_config.TextColumn("Status"),
+            "Details": st.column_config.TextColumn("Details"),
             "Severity": st.column_config.TextColumn("Severity"),
         },
     )
+    selected_rows = _selected_dataframe_rows(state)
+    if not selected_rows:
+        return None
+    selected = selected_rows[0]
+    return selected if isinstance(selected, int) else None
+
+
+def _selected_dataframe_rows(state: Any) -> list[Any]:
+    selection = getattr(state, "selection", None)
+    if selection is not None:
+        rows = getattr(selection, "rows", None)
+        if isinstance(rows, list):
+            return rows
+    if isinstance(state, Mapping):
+        selection = state.get("selection")
+        if isinstance(selection, Mapping) and isinstance(selection.get("rows"), list):
+            return selection["rows"]
+    return []
+
+
+def _render_row_details(row: Mapping[str, Any]) -> None:
+    details = row.get("details")
+    if not isinstance(details, list) or not details:
+        return
+    source_details = [detail for detail in details if isinstance(detail, Mapping) and detail.get("side") == "source"]
+    target_details = [detail for detail in details if isinstance(detail, Mapping) and detail.get("side") == "target"]
+    detail_cols = st.columns(2)
+    with detail_cols[0]:
+        _render_detail_side(source_details, side_label="Source")
+    with detail_cols[1]:
+        _render_detail_side(target_details, side_label="Target")
+
+
+def _render_detail_side(details: List[Mapping[str, Any]], *, side_label: str) -> None:
+    if not details:
+        return
+    for detail in details:
+        title = _detail_title(detail, side_label)
+        st.markdown(f"**{title}**")
+        value = detail.get("value")
+        if str(detail.get("format") or "") == "json":
+            st.code(json.dumps(value, indent=2, default=str), language="json", wrap_lines=True)
+        else:
+            language = "sql" if str(detail.get("format") or "") == "sql" else None
+            st.code(str(value or ""), language=language, wrap_lines=True)
+
+
+def _detail_title(detail: Mapping[str, Any], side_label: str) -> str:
+    label = str(detail.get("label") or "Detail")
+    if label.lower() == "profile ddl":
+        return PROFILE_DDL_DETAIL_TITLES.get(side_label.lower(), f"{side_label} profile DDL")
+    return f"{side_label} {label[:1].lower()}{label[1:]}"
 
 
 def _discovery_row_style(row: pd.Series) -> list[str]:
@@ -263,6 +327,7 @@ def _row_to_display(row: Mapping[str, Any]) -> Dict[str, Any]:
         "Source": _display_side_value(source),
         "Target": _display_side_value(target),
         "Status": STATUS_LABELS.get(str(row.get("status") or ""), str(row.get("status") or "")),
+        "Details": "Available" if row.get("details") else "",
         "Severity": str(row.get("severity") or "").title(),
         "Message": row.get("message", ""),
         "Guidance": row.get("guidance", ""),
