@@ -55,20 +55,23 @@ def render(ctx: AppContext) -> None:
     if st.session_state.get("project_migration_method") not in migration_methods:
         st.session_state["project_migration_method"] = next(iter(migration_methods), "")
 
-    with page_panel("Create project"):
-        with st.form("create_project", border=False):
-            project_name = st.text_input(
-                "Project name",
-                help="Lowercase letters + numbers + dash/underscore only. Used as response file name.",
-            )
-            source_conn = st.selectbox("Source connection", source_conn_names)
-            target_conn = st.selectbox("Target connection", target_conn_names, key="target_conn_select")
-            method_label = st.selectbox(
-                "Migration method",
-                list(migration_methods.keys()),
-                key="project_migration_method",
-            )
-            project_clicked = st.form_submit_button("Create project", type="primary")
+    tabs = st.tabs(["Create project", "Saved projects"])
+
+    with tabs[0]:
+        with page_panel("Create project"):
+            with st.form("create_project", border=False):
+                project_name = st.text_input(
+                    "Project name",
+                    help="Lowercase letters + numbers + dash/underscore only. Used as response file name.",
+                )
+                source_conn = st.selectbox("Source connection", source_conn_names)
+                target_conn = st.selectbox("Target connection", target_conn_names, key="target_conn_select")
+                method_label = st.selectbox(
+                    "Migration method",
+                    list(migration_methods.keys()),
+                    key="project_migration_method",
+                )
+                project_clicked = st.form_submit_button("Create project", type="primary")
 
     def valid_project(name: str) -> bool:
         return bool(name) and name.islower() and all(c.isalnum() or c in "-_" for c in name)
@@ -97,58 +100,59 @@ def render(ctx: AppContext) -> None:
                 st.success(validated["message"])
                 st.rerun()
 
-    with page_panel("Existing projects"):
-        if projects_raw is None:
-            st.error("ZEUS backend is not reachable. Existing projects cannot be loaded.")
-            return
+    with tabs[1]:
+        with page_panel("Saved projects"):
+            if projects_raw is None:
+                st.error("ZEUS backend is not reachable. Existing projects cannot be loaded.")
+                return
 
-        if not projects_resp:
-            st.info("No projects created yet.")
-            return
+            if not projects_resp:
+                st.info("No projects created yet.")
+                return
 
-        rows = []
-        for name, project in projects_resp.items():
-            project_info = project
-            rows.append(
-                {
-                    "Name": name,
-                    "Source": project_info.get("source_connection", ""),
-                    "Target": project_info.get("target_connection", ""),
-                    "Response File": project_info.get("rsp", ""),
-                    "Migration Method": project_info.get("migration_method", ""),
-                }
+            rows = []
+            for name, project in projects_resp.items():
+                project_info = project
+                rows.append(
+                    {
+                        "Name": name,
+                        "Source": project_info.get("source_connection", ""),
+                        "Target": project_info.get("target_connection", ""),
+                        "Response File": project_info.get("rsp", ""),
+                        "Migration Method": project_info.get("migration_method", ""),
+                    }
+                )
+
+            render_static_table(
+                rows,
+                ["Name", "Source", "Target", "Response File", "Migration Method"],
             )
 
-        render_static_table(
-            rows,
-            ["Name", "Source", "Target", "Response File", "Migration Method"],
-        )
-
-        to_delete = st.multiselect(
-            "Projects to delete",
-            list(projects_resp.keys()),
-            key="projects_to_delete",
-        )
-        confirm_delete = False
-        if to_delete:
-            st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
-            confirm_delete = st.checkbox(
-                "Confirm deletion",
-                key="project_delete_confirm",
+            to_delete = st.multiselect(
+                "Projects to delete",
+                list(projects_resp.keys()),
+                key="projects_to_delete",
             )
+            confirm_delete = False
+            if to_delete:
+                st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
+                confirm_delete = st.checkbox(
+                    "Confirm deletion",
+                    key="project_delete_confirm",
+                )
 
-        if st.button("Delete checked projects", type="secondary", disabled=bool(to_delete) and not confirm_delete):
-            if not to_delete:
-                st.info("No projects selected for deletion.")
-            else:
-                deleted = 0
-                for name in to_delete:
-                    resp = api_request("delete", f"/projects/{name}", api_base, auth)
-                    if resp:
-                        validate_payload_or_stop(resp, validate_project_delete_response)
-                        deleted += 1
-                st.success(f"Deleted {deleted} project{'s' if deleted != 1 else ''}.")
-                st.session_state.pop("project_delete_confirm", None)
-                st.rerun()
+            if st.button("Delete checked projects", type="secondary", disabled=bool(to_delete) and not confirm_delete):
+                if not to_delete:
+                    st.info("No projects selected for deletion.")
+                else:
+                    deleted = 0
+                    for name in to_delete:
+                        resp = api_request("delete", f"/projects/{name}", api_base, auth)
+                        if resp:
+                            validate_payload_or_stop(resp, validate_project_delete_response)
+                            deleted += 1
+                    st.success(f"Deleted {deleted} project{'s' if deleted != 1 else ''}.")
+                    st.session_state.pop("project_delete_confirm", None)
+                    st.rerun()
 
     # -----------------------------

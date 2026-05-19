@@ -65,9 +65,9 @@ def render(ctx: AppContext) -> None:
         user = wallet_user_by_name.get(name)
         return f"{name} ({user})" if user else name
 
-    col_form, col_table = st.columns([1.15, 1.1])
+    tabs = st.tabs(["Create connection", "Saved connections", "Test connection"])
 
-    with col_form:
+    with tabs[0]:
         with page_panel("Define Connection"):
             # NOTE: We intentionally do NOT wrap these inputs in st.form().
             # Widgets inside a form do not trigger re-runs until submit, which breaks conditional UI
@@ -188,8 +188,7 @@ def render(ctx: AppContext) -> None:
                         render_diagnostics(validated)
                         st.session_state["last_saved_conn"] = name
 
-
-    with col_table:
+    with tabs[1]:
         with page_panel("Saved Connections"):
             if raw_conns is None:
                 st.error(
@@ -332,6 +331,7 @@ def render(ctx: AppContext) -> None:
                         )
                         st.rerun()
 
+    with tabs[2]:
         with page_panel("Test Connection"):
             last_saved = st.session_state.get("last_saved_conn", "-- Select --")
             options = ["-- Select --"] + list(conns.keys())

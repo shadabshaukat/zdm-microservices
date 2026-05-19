@@ -7,7 +7,6 @@ from streamlit_shared.api_payload import validate_cli_command_response
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_workflow_back_button
-from streamlit_shared.ui import render_static_table
 from streamlit_shared.wallet_payload import (
     validate_credential_wallet_delete_response,
     validate_credential_wallet_rows,
@@ -102,24 +101,29 @@ def render(ctx: AppContext) -> None:
         if wallets_unavailable:
             st.error("ZEUS backend is not reachable. Saved wallets cannot be loaded.")
         elif wallet_rows:
-            wallet_table_rows = [
-                {
-                    "Wallet": row["name"],
-                    "Credential User": row.get("credential_username") or "",
-                    "Status": "Ready" if row.get("credential_username") else "Empty",
-                }
-                for row in wallet_rows
-            ]
-            render_static_table(
-                wallet_table_rows,
-                ["Wallet", "Credential User", "Status"],
-            )
+            header_cols = st.columns([0.08, 0.38, 0.34, 0.2])
+            header_cols[0].caption("Delete")
+            header_cols[1].caption("Wallet")
+            header_cols[2].caption("Credential user")
+            header_cols[3].caption("Status")
 
-            to_delete = st.multiselect(
-                "Wallets to delete",
-                wallet_names,
-                key="credential_wallets_to_delete",
-            )
+            to_delete = []
+            for row in wallet_rows:
+                name = row["name"]
+                credential_user = row.get("credential_username") or ""
+                status = "Ready" if credential_user else "Empty"
+                row_cols = st.columns([0.08, 0.38, 0.34, 0.2], vertical_alignment="center")
+                selected = row_cols[0].checkbox(
+                    f"Delete {name}",
+                    key=f"credential_wallet_delete_{name}",
+                    label_visibility="collapsed",
+                )
+                row_cols[1].markdown(f"**{name}**")
+                row_cols[2].markdown(credential_user or "_No credential_")
+                row_cols[3].markdown(status)
+                if selected:
+                    to_delete.append(name)
+
             confirm_delete = False
             if to_delete:
                 selected_has_credentials = any(wallet_credentials.get(name) for name in to_delete)
@@ -129,7 +133,7 @@ def render(ctx: AppContext) -> None:
                 else:
                     confirm_delete = True
 
-            if st.button("Delete checked wallets", type="secondary", disabled=bool(to_delete) and not confirm_delete):
+            if st.button("Delete selected wallets", type="secondary", disabled=bool(to_delete) and not confirm_delete):
                 if not to_delete:
                     st.info("No wallets selected for deletion.")
                 else:

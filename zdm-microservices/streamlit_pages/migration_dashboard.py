@@ -222,38 +222,35 @@ def _status_metric_class(label: str) -> str:
     return f"zeus-status-metric zeus-status-metric--{html.escape(normalized)}"
 
 
-def _job_type_summary_panel(title: str, subtitle: str, counts: Dict[str, int], accent: str) -> None:
-    metric_html = []
-    for label in [column for column in KPI_COLUMNS if column != "Total Jobs"]:
-        metric_html.append(
-            f"""
-            <div class="{_status_metric_class(label)}">
-                <span class="zeus-status-metric__label">{html.escape(label)}</span>
-                <span class="zeus-status-metric__value">{int(counts.get(label, 0))}</span>
-            </div>
-            """
+def _job_type_summary_markup(title: str, subtitle: str, counts: Dict[str, int], accent: str) -> str:
+    metric_html = "".join(
+        (
+            f'<div class="{_status_metric_class(label)}">'
+            f'<span class="zeus-status-metric__label">{html.escape(label)}</span>'
+            f'<span class="zeus-status-metric__value">{int(counts.get(label, 0))}</span>'
+            "</div>"
         )
-
-    st.markdown(
-        f"""
-        <section class="zeus-job-summary-card" style="--summary-accent: {html.escape(accent)};">
-            <div class="zeus-job-summary-card__header">
-                <div>
-                    <h3 class="zeus-job-summary-card__title">{html.escape(title)}</h3>
-                    <p class="zeus-job-summary-card__subtitle">{html.escape(subtitle)}</p>
-                </div>
-                <div class="zeus-job-summary-card__total">
-                    <span class="zeus-job-summary-card__total-value">{int(counts.get("Total Jobs", 0))}</span>
-                    <span class="zeus-job-summary-card__total-label">Total jobs</span>
-                </div>
-            </div>
-            <div class="zeus-job-summary-card__metrics">
-                {''.join(metric_html)}
-            </div>
-        </section>
-        """,
-        unsafe_allow_html=True,
+        for label in [column for column in KPI_COLUMNS if column != "Total Jobs"]
     )
+    return (
+        f'<section class="zeus-job-summary-card" style="--summary-accent: {html.escape(accent)};">'
+        '<div class="zeus-job-summary-card__header">'
+        "<div>"
+        f'<h3 class="zeus-job-summary-card__title">{html.escape(title)}</h3>'
+        f'<p class="zeus-job-summary-card__subtitle">{html.escape(subtitle)}</p>'
+        "</div>"
+        '<div class="zeus-job-summary-card__total">'
+        f'<span class="zeus-job-summary-card__total-value">{int(counts.get("Total Jobs", 0))}</span>'
+        '<span class="zeus-job-summary-card__total-label">Total jobs</span>'
+        "</div>"
+        "</div>"
+        f'<div class="zeus-job-summary-card__metrics">{metric_html}</div>'
+        "</section>"
+    )
+
+
+def _job_type_summary_panel(title: str, subtitle: str, counts: Dict[str, int], accent: str) -> None:
+    st.html(_job_type_summary_markup(title, subtitle, counts, accent))
 
 
 def render(ctx: AppContext) -> None:
