@@ -35,16 +35,37 @@ def render(ctx: AppContext) -> None:
     )
     wallet_names = [row["name"] for row in wallet_rows]
     wallet_credentials = {row["name"]: row.get("credential_username") for row in wallet_rows}
+    wallet_options = ["-- Select wallet --"] + wallet_names
+
+    flash_message = st.session_state.pop("credential_wallet_flash", None)
+    if flash_message:
+        st.success(str(flash_message))
+
+    if st.session_state.pop("credential_wallet_create_reset", False):
+        st.session_state["credential_wallet_name_input"] = ""
+    if st.session_state.pop("credential_create_reset", False):
+        st.session_state["credential_wallet_select"] = "-- Select wallet --"
+        st.session_state["credential_user_input"] = ""
+        st.session_state["credential_password_input"] = ""
+    if st.session_state.get("credential_wallet_select") not in wallet_options:
+        st.session_state["credential_wallet_select"] = "-- Select wallet --"
+
+    skip_wallet_submit = st.session_state.pop("credential_wallet_skip_next_submit", False)
+    skip_credential_submit = st.session_state.pop("credential_skip_next_submit", False)
 
     tabs = st.tabs(["Create wallet & credential", "Saved wallets"])
 
     with tabs[0]:
         with page_panel("Create wallet", width="form"):
             with st.form("create_wallet", border=False):
-                wallet_name = st.text_input("Credential wallet name", help="Creates MIGRATION_BASE/wallets/cred/<wallet_name>")
+                wallet_name = st.text_input(
+                    "Credential wallet name",
+                    help="Creates MIGRATION_BASE/wallets/cred/<wallet_name>",
+                    key="credential_wallet_name_input",
+                )
                 create_wallet_clicked = st.form_submit_button("Create wallet", type="primary")
 
-            if create_wallet_clicked:
+            if create_wallet_clicked and not skip_wallet_submit:
                 if not wallet_name:
                     st.error("Wallet name is required.")
                 elif wallet_name in wallet_names:
@@ -58,13 +79,16 @@ def render(ctx: AppContext) -> None:
                             validate_cli_command_response,
                             endpoint="POST /wallets/ora-pki",
                         )
-                        st.success(validated["status"])
+                        st.session_state["credential_wallet_flash"] = (
+                            f"Credential wallet '{wallet_name}' created."
+                        )
+                        st.session_state["credential_wallet_create_reset"] = True
+                        st.session_state["credential_wallet_select"] = wallet_name
+                        st.session_state["credential_wallet_skip_next_submit"] = True
                         st.rerun()
 
         with page_panel("Create credential", width="form"):
-            wallet_options = ["-- Select wallet --"] + wallet_names
-
-            selected_wallet = st.selectbox("Wallet", wallet_options)
+            selected_wallet = st.selectbox("Wallet", wallet_options, key="credential_wallet_select")
             selected_wallet_has_credential = (
                 selected_wallet != "-- Select wallet --"
                 and bool(wallet_credentials.get(selected_wallet))
@@ -73,15 +97,15 @@ def render(ctx: AppContext) -> None:
                 st.warning("This wallet already has a credential. Delete and recreate the wallet if it is wrong.")
 
             with st.form("create_credential", border=False):
-                cred_user = st.text_input("User")
-                cred_password = st.text_input("Password", type="password")
+                cred_user = st.text_input("User", key="credential_user_input")
+                cred_password = st.text_input("Password", type="password", key="credential_password_input")
                 create_cred_clicked = st.form_submit_button(
                     "Create credential",
                     type="primary",
                     disabled=selected_wallet_has_credential,
                 )
 
-            if create_cred_clicked:
+            if create_cred_clicked and not skip_credential_submit:
                 wallet_name_cred = selected_wallet if selected_wallet != "-- Select wallet --" else ""
                 if not wallet_name_cred or not cred_user or not cred_password:
                     st.error("Wallet name, user, and password are required.")
@@ -96,7 +120,11 @@ def render(ctx: AppContext) -> None:
                             validate_cli_command_response,
                             endpoint="POST /wallets/mkstore-credential",
                         )
-                        st.success(validated["status"])
+                        st.session_state["credential_wallet_flash"] = (
+                            f"Credential for wallet '{wallet_name_cred}' created."
+                        )
+                        st.session_state["credential_create_reset"] = True
+                        st.session_state["credential_skip_next_submit"] = True
                         st.rerun()
 
     with tabs[1]:

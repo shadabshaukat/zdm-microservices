@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
@@ -36,7 +37,11 @@ def st_df_safe(df: pd.DataFrame, **kwargs):
 
 def render_diagnostics(payload: Any, label: str = "Diagnostics") -> None:
     with st.expander(label, expanded=False):
-        st.json(payload, expanded=False)
+        try:
+            text = json.dumps(payload, indent=2, sort_keys=True, default=str)
+        except TypeError:
+            text = str(payload)
+        st.code(text, language="json", wrap_lines=True)
 
 
 def render_static_table(
