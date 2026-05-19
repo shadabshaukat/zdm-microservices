@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 import streamlit as st
 
 
-AUTO_REFRESH_STATUSES = {"RUNNING", "PENDING", "SCHEDULED"}
+AUTO_REFRESH_STATUSES = {"EXECUTING", "IN_PROGRESS", "PENDING", "RUNNING", "SCHEDULED", "STARTED"}
 
 
 def parse_zdm_output(out: str) -> Dict[str, Any]:
@@ -49,7 +49,7 @@ def status_badge(status: str) -> Tuple[str, str]:
         return normalized, "success"
     if normalized in ("FAILED", "ERROR"):
         return normalized, "error"
-    if normalized == "RUNNING":
+    if normalized in {"EXECUTING", "IN_PROGRESS", "RUNNING", "STARTED"}:
         return normalized, "warning"
     if normalized in ("PENDING", "SCHEDULED", "PAUSED"):
         return normalized, "info"

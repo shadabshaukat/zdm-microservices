@@ -85,7 +85,7 @@ def render(ctx: AppContext) -> None:
                             script_path = validated.get("script_path")
                             st.session_state["runjob_show_current_progress"] = True
                             if job_id:
-                                st.success(f"Submitted saved job '{saved_sel}' as ZDM job {job_id}.")
+                                _show_submission_toast(f"Submitted saved job '{saved_sel}' as ZDM job {job_id}.")
                                 st.session_state["last_job_id"] = job_id
                                 st.session_state["runjob_current_job_autorefresh"] = True
                                 st.session_state["runjob_current_job_should_refresh"] = True
@@ -96,8 +96,6 @@ def render(ctx: AppContext) -> None:
                                     "The saved job was submitted, but ZEUS could not read the ZDM job ID "
                                     "from the submission output."
                                 )
-                            if script_path:
-                                st.caption(f"Run script: {script_path}")
                             st.session_state[RUNJOB_SUBMISSION_RESULT_KEY] = validated
                             st.session_state[RUNJOB_SUBMISSION_NAME_KEY] = saved_sel
         with c4:
@@ -286,3 +284,8 @@ def _stop_on_saved_job_error(exc: ValueError) -> None:
     with st.expander("Technical details", expanded=False):
         st.code(str(exc))
     st.stop()
+
+
+def _show_submission_toast(message: str) -> None:
+    if hasattr(st, "toast"):
+        st.toast(message)
