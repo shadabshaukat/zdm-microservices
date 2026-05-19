@@ -115,10 +115,11 @@ def _render_styles() -> None:
             box-shadow: 0 2px 4px rgba(30, 41, 59, 0.04), 0 1px 2px rgba(30, 41, 59, 0.04);
         }
         a.zeus-workflow-card {
-            display: block;
-            min-height: 128px;
+            display: flex;
+            flex-direction: column;
+            min-height: 156px;
             margin: 0 0 0.72rem 0;
-            padding: 0.82rem 0.92rem;
+            padding: 1.05rem 1.1rem;
             border: 1px solid #E2E8F0;
             border-radius: 8px;
             background: #FFFFFF;
@@ -132,31 +133,35 @@ def _render_styles() -> None:
             box-shadow: 0 3px 6px rgba(30, 41, 59, 0.07);
             text-decoration: none;
         }
+        a.zeus-workflow-card:focus-visible {
+            outline: 3px solid rgba(37, 99, 235, 0.24);
+            outline-offset: 2px;
+        }
         .zeus-workflow-step {
-            font-size: 0.68rem;
-            line-height: 1.1;
-            font-weight: 640;
+            font-size: 0.78rem;
+            line-height: 1.15;
+            font-weight: 720;
             color: #64748B;
-            margin-bottom: 0.28rem;
+            margin-bottom: 0.34rem;
         }
         .zeus-workflow-title {
-            font-size: 1rem;
-            line-height: 1.25;
-            font-weight: 680;
+            font-size: 1.18rem;
+            line-height: 1.22;
+            font-weight: 800;
             color: #1E293B;
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.46rem;
         }
         .zeus-workflow-description {
-            min-height: 2.8rem;
-            font-size: 0.84rem;
-            line-height: 1.35;
+            font-size: 0.95rem;
+            line-height: 1.42;
             color: #64748B;
-            margin-bottom: 0.55rem;
+            margin-bottom: 0.72rem;
         }
         .zeus-workflow-action {
-            font-size: 0.82rem;
-            line-height: 1.2;
-            font-weight: 640;
+            margin-top: auto;
+            font-size: 0.92rem;
+            line-height: 1.25;
+            font-weight: 720;
             color: #2563EB;
         }
         </style>
