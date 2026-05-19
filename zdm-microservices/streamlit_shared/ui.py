@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any
+import html
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 import pandas as pd
@@ -26,6 +27,76 @@ def st_df_safe(df: pd.DataFrame, **kwargs):
 def render_diagnostics(payload: Any, label: str = "Diagnostics") -> None:
     with st.expander(label, expanded=False):
         st.json(payload, expanded=False)
+
+
+def render_static_table(
+    rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+    *,
+    empty_message: str = "No rows to display.",
+) -> None:
+    if not rows:
+        st.caption(empty_message)
+        return
+
+    header = "".join(f"<th>{html.escape(str(column))}</th>" for column in columns)
+    body_rows = []
+    for row in rows:
+        cells = "".join(
+            f"<td>{html.escape(_table_cell(row.get(column)))}</td>"
+            for column in columns
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+        .zeus-static-table-wrap {{
+            width: 100%;
+            overflow-x: auto;
+            margin: 0.35rem 0 0.8rem 0;
+        }}
+        .zeus-static-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }}
+        .zeus-static-table th {{
+            padding: 0.55rem 0.65rem;
+            border-bottom: 1px solid #CBD5E1;
+            color: #475569;
+            font-weight: 680;
+            text-align: left;
+            white-space: nowrap;
+        }}
+        .zeus-static-table td {{
+            padding: 0.52rem 0.65rem;
+            border-bottom: 1px solid #E2E8F0;
+            color: #1E293B;
+            vertical-align: top;
+        }}
+        .zeus-static-table tr:last-child td {{
+            border-bottom: 0;
+        }}
+        </style>
+        <div class="zeus-static-table-wrap">
+            <table class="zeus-static-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _table_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    return str(value)
 
 
 def param_help(key: str, extra: str = "") -> str:

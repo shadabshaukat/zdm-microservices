@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping
 
-import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
@@ -13,7 +12,7 @@ from streamlit_shared.api_payload import (
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_workflow_back_button
-from streamlit_shared.ui import render_diagnostics, st_df_safe
+from streamlit_shared.ui import render_diagnostics, render_static_table
 
 
 STATUS_LABELS = {
@@ -167,8 +166,11 @@ def _render_rows(rows: List[Mapping[str, Any]]) -> None:
     if not rows:
         st.info("No comparison rows were returned.")
         return
-    frame = pd.DataFrame([_row_to_display(row) for row in rows])
-    st_df_safe(frame, hide_index=True, width="stretch")
+    display_rows = [_row_to_display(row) for row in rows]
+    render_static_table(
+        display_rows,
+        ["Check", "Source", "Target", "Status", "Severity", "Message", "Guidance"],
+    )
 
 
 def _row_to_display(row: Mapping[str, Any]) -> Dict[str, Any]:

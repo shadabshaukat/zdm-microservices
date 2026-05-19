@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import (
@@ -26,7 +25,7 @@ from streamlit_shared.db_types import (
     is_adb_database_type,
 )
 from streamlit_shared.navigation import render_workflow_back_button
-from streamlit_shared.ui import render_diagnostics
+from streamlit_shared.ui import render_diagnostics, render_static_table
 from streamlit_shared.wallet_payload import validate_credential_wallet_rows
 
 def render(ctx: AppContext) -> None:
@@ -215,77 +214,123 @@ def render(ctx: AppContext) -> None:
                             "Credential Wallet": info.get("credential_wallet_name") or "",
                             "Credential User": wallet_user_by_name.get(info.get("credential_wallet_name") or "") or "",
                             "Status": "Ready" if info.get("credential_wallet_name") else "Needs credential wallet",
-                            "Delete?": False,
                         }
                     )
 
-                df_orig = pd.DataFrame(rows)
-                edited = st.data_editor(
-                    df_orig,
-                    hide_index=True,
-                    width='stretch',
-                    column_config={
-                        "Name": st.column_config.TextColumn(disabled=True),
-                        "Role": st.column_config.TextColumn(disabled=True),
-                        "DB Platform": st.column_config.TextColumn(disabled=True),
-                        "TLS Wallet dir": st.column_config.TextColumn(disabled=True),
-                        "Credential Wallet": st.column_config.SelectboxColumn(options=[""] + wallet_names),
-                        "Credential User": st.column_config.TextColumn(disabled=True),
-                        "Status": st.column_config.TextColumn(disabled=True),
-                        "Protocol": st.column_config.SelectboxColumn(options=["TCP", "TCPS"]),
-                        "TLS w/o wallet": st.column_config.CheckboxColumn(),
-                        "Delete?": st.column_config.CheckboxColumn(),
-                    },
-                    key="conn_editor",
+                render_static_table(
+                    rows,
+                    [
+                        "Name",
+                        "Role",
+                        "DB Platform",
+                        "Host",
+                        "Port",
+                        "Service",
+                        "Protocol",
+                        "Credential Wallet",
+                        "Credential User",
+                        "Status",
+                    ],
                 )
 
-                col_save, col_delete = st.columns([0.55, 0.45])
-                with col_save:
+                st.divider()
+                edit_options = ["-- Select connection --"] + list(conns.keys())
+                edit_name = st.selectbox(
+                    "Connection to edit",
+                    edit_options,
+                    key="conn_edit_select",
+                )
+                if edit_name != "-- Select connection --":
+                    edit_info = conns[edit_name]
+                    edit_wallet_options = ["-- Select credential wallet --"] + wallet_names
+                    saved_wallet = edit_info.get("credential_wallet_name") or "-- Select credential wallet --"
+                    edit_wallet_index = (
+                        edit_wallet_options.index(saved_wallet)
+                        if saved_wallet in edit_wallet_options
+                        else 0
+                    )
+                    edit_host = st.text_input(
+                        "Edit host",
+                        value=str(edit_info.get("host") or ""),
+                        key=f"conn_edit_host_{edit_name}",
+                    )
+                    edit_port = st.number_input(
+                        "Edit port",
+                        min_value=1,
+                        max_value=65535,
+                        value=int(edit_info.get("port") or 1521),
+                        step=1,
+                        key=f"conn_edit_port_{edit_name}",
+                    )
+                    edit_service = st.text_input(
+                        "Edit service name",
+                        value=str(edit_info.get("service_name") or ""),
+                        key=f"conn_edit_service_{edit_name}",
+                    )
+                    edit_protocol = st.selectbox(
+                        "Edit protocol",
+                        ["TCP", "TCPS"],
+                        index=1 if str(edit_info.get("protocol") or "").upper() == "TCPS" else 0,
+                        key=f"conn_edit_protocol_{edit_name}",
+                    )
+                    edit_tls_without_wallet = st.checkbox(
+                        "TLS without wallet",
+                        value=bool(edit_info.get("allow_tls_without_wallet")),
+                        key=f"conn_edit_tls_without_wallet_{edit_name}",
+                    )
+                    edit_credential_wallet = st.selectbox(
+                        "Edit credential wallet",
+                        edit_wallet_options,
+                        format_func=wallet_display,
+                        index=edit_wallet_index,
+                        key=f"conn_edit_credential_wallet_{edit_name}",
+                    )
                     if st.button("Save edits", type="primary", width='stretch'):
-                        updated = 0
-                        for idx, row in edited.iterrows():
-                            orig = df_orig.iloc[idx]
-                            if row.equals(orig):
-                                continue
-                            name = row["Name"]
+                        if edit_credential_wallet == "-- Select credential wallet --":
+                            st.error("Credential wallet is required.")
+                        elif not edit_host or not edit_service:
+                            st.error("Host and service name are required.")
+                        else:
                             payload = {
-                                "name": name,
-                                "db_type": conns[name].get("db_type", ""),
-                                "connection_role": conns[name].get("connection_role", ""),
-                                "host": row["Host"],
-                                "port": int(row["Port"]),
-                                "service_name": row["Service"],
-                                "protocol": row["Protocol"],
-                                "allow_tls_without_wallet": bool(row["TLS w/o wallet"]),
-                                "credential_wallet_name": row["Credential Wallet"],
+                                "name": edit_name,
+                                "db_type": edit_info.get("db_type", ""),
+                                "connection_role": edit_info.get("connection_role", ""),
+                                "host": edit_host,
+                                "port": int(edit_port),
+                                "service_name": edit_service,
+                                "protocol": edit_protocol,
+                                "allow_tls_without_wallet": bool(edit_tls_without_wallet),
+                                "credential_wallet_name": edit_credential_wallet,
                             }
                             resp = api_request("post", "/dbconnections", api_base, auth, payload=payload)
                             if resp:
                                 validate_payload_or_stop(
                                     resp,
                                     validate_dbconnection_save_response,
-                                    expected_name=name,
+                                    expected_name=edit_name,
                                 )
-                                updated += 1
-                        if updated == 0:
-                            st.info("No changes to save.")
-                        else:
-                            st.success(f"Saved {updated} changed connection{'s' if updated != 1 else ''}.")
-                with col_delete:
-                    if st.button("Delete checked", type="secondary", width='stretch'):
-                        to_delete = [row["Name"] for _, row in edited.iterrows() if row.get("Delete?", False)]
-                        if not to_delete:
-                            st.info("No connections selected for deletion.")
-                        else:
-                            deleted = 0
-                            for name in to_delete:
-                                resp = api_request("delete", f"/dbconnections/{name}", api_base, auth)
-                                if resp:
-                                    validate_payload_or_stop(resp, validate_dbconnection_delete_response)
-                                    deleted += 1
-                            st.success(
-                                f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list."
-                            )
+                                st.success("Saved connection edits.")
+                                st.rerun()
+
+                to_delete = st.multiselect(
+                    "Connections to delete",
+                    list(conns.keys()),
+                    key="connections_to_delete",
+                )
+                if st.button("Delete checked", type="secondary", width='stretch'):
+                    if not to_delete:
+                        st.info("No connections selected for deletion.")
+                    else:
+                        deleted = 0
+                        for name in to_delete:
+                            resp = api_request("delete", f"/dbconnections/{name}", api_base, auth)
+                            if resp:
+                                validate_payload_or_stop(resp, validate_dbconnection_delete_response)
+                                deleted += 1
+                        st.success(
+                            f"Deleted {deleted} connection{'s' if deleted != 1 else ''}. Refresh to update list."
+                        )
+                        st.rerun()
 
         with page_panel("Test Connection"):
             last_saved = st.session_state.get("last_saved_conn", "-- Select --")

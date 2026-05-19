@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
@@ -8,6 +7,7 @@ from streamlit_shared.api_payload import validate_cli_command_response
 from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.navigation import render_workflow_back_button
+from streamlit_shared.ui import render_static_table
 from streamlit_shared.wallet_payload import (
     validate_credential_wallet_delete_response,
     validate_credential_wallet_rows,
@@ -107,24 +107,19 @@ def render(ctx: AppContext) -> None:
                     "Wallet": row["name"],
                     "Credential User": row.get("credential_username") or "",
                     "Status": "Ready" if row.get("credential_username") else "Empty",
-                    "Delete?": False,
                 }
                 for row in wallet_rows
             ]
-            edited = st.data_editor(
-                pd.DataFrame(wallet_table_rows),
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Wallet": st.column_config.TextColumn(disabled=True),
-                    "Credential User": st.column_config.TextColumn(disabled=True),
-                    "Status": st.column_config.TextColumn(disabled=True),
-                    "Delete?": st.column_config.CheckboxColumn(),
-                },
-                key="credential_wallet_editor",
+            render_static_table(
+                wallet_table_rows,
+                ["Wallet", "Credential User", "Status"],
             )
 
-            to_delete = [row["Wallet"] for _, row in edited.iterrows() if row.get("Delete?", False)]
+            to_delete = st.multiselect(
+                "Wallets to delete",
+                wallet_names,
+                key="credential_wallets_to_delete",
+            )
             confirm_delete = False
             if to_delete:
                 selected_has_credentials = any(wallet_credentials.get(name) for name in to_delete)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
@@ -15,6 +14,7 @@ from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import db_connection_names_for_role
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.response_file_form import active_migration_method_options
+from streamlit_shared.ui import render_static_table
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -116,26 +116,19 @@ def render(ctx: AppContext) -> None:
                     "Target": project_info.get("target_connection", ""),
                     "Response File": project_info.get("rsp", ""),
                     "Migration Method": project_info.get("migration_method", ""),
-                    "Delete?": False,
                 }
             )
 
-        edited = st.data_editor(
-            pd.DataFrame(rows),
-            hide_index=True,
-            width='stretch',
-            column_config={
-                "Name": st.column_config.TextColumn(disabled=True),
-                "Source": st.column_config.TextColumn(disabled=True),
-                "Target": st.column_config.TextColumn(disabled=True),
-                "Response File": st.column_config.TextColumn(disabled=True),
-                "Migration Method": st.column_config.TextColumn(disabled=True),
-                "Delete?": st.column_config.CheckboxColumn(),
-            },
-            key="project_editor",
+        render_static_table(
+            rows,
+            ["Name", "Source", "Target", "Response File", "Migration Method"],
         )
 
-        to_delete = [row["Name"] for _, row in edited.iterrows() if row.get("Delete?", False)]
+        to_delete = st.multiselect(
+            "Projects to delete",
+            list(projects_resp.keys()),
+            key="projects_to_delete",
+        )
         confirm_delete = False
         if to_delete:
             st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
