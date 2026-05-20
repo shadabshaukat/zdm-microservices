@@ -10,14 +10,14 @@ from streamlit_shared.ui import query_param
 
 WORKFLOW_SECTION = "workflow"
 WORKFLOW_TARGET_STEPS = (
+    ("wallet", "DB Wallets & Credentials"),
     ("connections", "DB Connections"),
-    ("wallet", "Wallets & Credentials"),
-    ("discovery", "DB Discovery"),
     ("projects", "Projects"),
-    ("response", "Response Files"),
-    ("createjob", "Job Definitions"),
-    ("runjob", "Job Submission"),
-    ("jobs", "Job Monitoring"),
+    ("discovery", "Database Discovery"),
+    ("response", "ZDM Response Files"),
+    ("createjob", "ZDM Job Definitions"),
+    ("runjob", "ZDM Job Submission"),
+    ("jobs", "ZDM Job Monitoring"),
     ("fleet_dashboard", "Fleet Dashboard"),
 )
 WORKFLOW_TARGET_SECTIONS = tuple(section for section, _ in WORKFLOW_TARGET_STEPS)
@@ -32,15 +32,15 @@ NAV_GROUPS = [
     (
         "Prepare Databases",
         [
-            ("DB Connections", "connections"),
             ("DB Wallets & Credentials", "wallet"),
-            ("DB Discovery", "discovery"),
+            ("DB Connections", "connections"),
         ],
     ),
     (
         "Design Migration",
         [
             ("Projects", "projects"),
+            ("Database Discovery", "discovery"),
             ("ZDM Response Files", "response"),
             ("ZDM Job Definitions", "createjob"),
         ],

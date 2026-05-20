@@ -9,20 +9,17 @@ import streamlit as st
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.response_file_form import (
     FieldSpec,
-    MIGRATION_TYPE_OPTIONS,
     REMAP_TYPE_OPTIONS,
     SELECT_PROJECT,
     SELECT_WALLET,
     collect_additional_parameters,
     collect_metadata_remaps,
-    default_method,
     include_schemas_from_text,
     migration_medium_guidance,
     migration_medium_options,
-    migration_decision_input_summary_parts,
     migration_decision_input_values_from_project,
     migration_method_label,
-    method_options,
+    migration_type_for_method,
     normalize_method,
     project_environment_response_values,
     profile_additional_default_rows,
@@ -95,34 +92,23 @@ def render_responsefile_basics(
     auth: Any,
 ) -> ResponseFileSelection:
     st.markdown("#### Basics")
-    migration_type = st.selectbox(
-        "Migration type",
-        MIGRATION_TYPE_OPTIONS,
-        key="rf_migration_type",
-        help=param_help("MIGRATION_TYPE"),
-    )
-
-    method_opts = method_options(migration_type)
-    default_method_value = default_method(migration_type)
-    if not method_opts:
-        st.error(f"No active migration profile is available for {migration_type}.")
-        st.stop()
     project_record = projects_resp.get(project)
     if not isinstance(project_record, dict):
         st.error(f"Selected project '{project}' is no longer available. Refresh the page and choose a project again.")
         st.stop()
 
-    if st.session_state.get("rf_migration_method") not in method_opts:
-        st.session_state["rf_migration_method"] = default_method_value
-
-    migration_method = st.selectbox(
-        "Migration method",
-        method_opts,
-        key="rf_migration_method",
-        help=param_help("MIGRATION_METHOD"),
-    )
-
-    selected_migration_method = normalize_method(migration_method)
+    selected_migration_method = normalize_method(project_record.get("migration_method"))
+    if not selected_migration_method:
+        st.error("This project is missing a migration method. Create the project again before building response files.")
+        st.stop()
+    try:
+        migration_type = migration_type_for_method(selected_migration_method)
+    except Exception as exc:
+        st.error(f"This project's migration method is not available for response-file generation: {exc}")
+        st.stop()
+    migration_method = selected_migration_method
+    st.session_state["rf_migration_method"] = selected_migration_method
+    st.markdown(f"`Migration method: {migration_method_label(selected_migration_method)}`")
     supported = response_method_supported(selected_migration_method)
     if not supported:
         st.error(responsefile_unavailable_message(selected_migration_method))
@@ -132,7 +118,6 @@ def render_responsefile_basics(
         project_record,
         connections_resp,
     )
-    _render_decision_input_summary(selected_migration_method, decision_input_values)
 
     derived_response_values = project_environment_response_values(
         project_record,
@@ -177,14 +162,6 @@ def render_responsefile_basics(
         medium=medium,
         response_method_supported=supported,
     )
-
-
-def _render_decision_input_summary(migration_method: str, decision_input_values: Mapping[str, Any]) -> None:
-    parts = migration_decision_input_summary_parts(migration_method, decision_input_values)
-    if not parts:
-        return
-    separator = " to " if len(parts) == 2 else " / "
-    st.caption("Migration path: " + separator.join(parts))
 
 
 def _render_medium_notes(

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import html
+from typing import Any, Dict, List, Optional, Sequence
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
 from streamlit_shared.api_client import api_request, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_jobs_dashboard_response
-from streamlit_shared.console_layout import render_page_header
+from streamlit_shared.console_layout import page_header_actions, page_panel
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_data import (
     KPI_COLUMNS,
@@ -18,8 +20,8 @@ from streamlit_shared.job_data import (
 from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import (
     monitor_job_url,
+    query_param,
     render_diagnostics,
-    st_df_safe,
 )
 
 
@@ -34,6 +36,243 @@ CHART_STATUS_COLORS = {
     "MIGRATE": "#0891B2",
 }
 CHART_FALLBACK_COLORS = ["#2563EB", "#14B8A6", "#F59E0B", "#8B5CF6", "#64748B"]
+FLEET_TAB_PARAM_LABELS = {
+    "overview": "Overview",
+    "fleet_status": "Fleet Status",
+    "job_details": "Job Details",
+    "failures": "Failures",
+    "diagnostics": "Diagnostics",
+}
+FLEET_TAB_LABELS = list(FLEET_TAB_PARAM_LABELS.values())
+
+
+def _render_dashboard_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .zeus-dashboard-tabs {
+            height: 0;
+        }
+
+        div[data-testid="stTabs"] [role="tablist"] {
+            gap: 0.42rem;
+            padding: 0.25rem 0 0.55rem 0;
+            border-bottom: 1px solid var(--zeus-border);
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] {
+            min-height: 34px;
+            padding: 0.46rem 0.78rem;
+            border: 1px solid transparent;
+            border-radius: 8px 8px 0 0;
+            color: var(--zeus-text-muted);
+            font-size: 0.82rem;
+            font-weight: 650;
+            letter-spacing: 0;
+        }
+
+        div[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            border-color: var(--zeus-border);
+            border-bottom-color: #FFFFFF;
+            background: #FFFFFF;
+            color: var(--zeus-primary-dark);
+            box-shadow: 0 -1px 0 rgba(15, 23, 42, 0.02);
+        }
+
+        div[data-testid="stTabs"] button[role="tab"] p {
+            margin: 0;
+            font-size: inherit;
+            line-height: 1.2;
+        }
+
+        .zeus-dashboard-section-title {
+            margin: 0 0 0.8rem 0;
+            color: var(--zeus-text);
+            font-size: 1.08rem;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+
+        .zeus-job-summary-card {
+            display: grid;
+            gap: 0.9rem;
+            min-height: 178px;
+            padding: 1rem 1rem 0.95rem 1rem;
+            border: 1px solid var(--zeus-border);
+            border-left: 4px solid var(--summary-accent, var(--zeus-primary));
+            border-radius: 8px;
+            background: #FFFFFF;
+            box-shadow: var(--zeus-shadow-subtle);
+        }
+
+        .zeus-job-summary-card__header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        .zeus-job-summary-card__title {
+            margin: 0;
+            color: var(--zeus-text);
+            font-size: 1.05rem;
+            font-weight: 820;
+            line-height: 1.2;
+        }
+
+        .zeus-job-summary-card__subtitle {
+            margin: 0.18rem 0 0 0;
+            color: var(--zeus-text-muted);
+            font-size: 0.78rem;
+            font-weight: 620;
+            line-height: 1.3;
+        }
+
+        .zeus-job-summary-card__total {
+            display: grid;
+            justify-items: end;
+            gap: 0.08rem;
+            min-width: 72px;
+        }
+
+        .zeus-job-summary-card__total-value {
+            color: var(--zeus-text);
+            font-size: 2rem;
+            font-weight: 780;
+            line-height: 1;
+        }
+
+        .zeus-job-summary-card__total-label {
+            color: var(--zeus-text-muted);
+            font-size: 0.68rem;
+            font-weight: 700;
+            line-height: 1.2;
+            text-transform: uppercase;
+        }
+
+        .zeus-job-summary-card__metrics {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.45rem;
+        }
+
+        .zeus-status-metric {
+            min-width: 0;
+            padding: 0.58rem 0.62rem;
+            border: 1px solid var(--zeus-border);
+            border-radius: 7px;
+            background: var(--metric-bg, #F8FAFC);
+        }
+
+        .zeus-status-metric__label {
+            display: block;
+            overflow: hidden;
+            color: var(--zeus-text-muted);
+            font-size: 0.66rem;
+            font-weight: 720;
+            line-height: 1.15;
+            text-overflow: ellipsis;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        .zeus-status-metric__value {
+            display: block;
+            margin-top: 0.22rem;
+            color: var(--metric-color, var(--zeus-text));
+            font-size: 1.28rem;
+            font-weight: 780;
+            line-height: 1;
+        }
+
+        .zeus-status-metric--succeeded {
+            --metric-bg: #ECFDF5;
+            --metric-color: #047857;
+        }
+
+        .zeus-status-metric--failed {
+            --metric-bg: #FEF2F2;
+            --metric-color: #B91C1C;
+        }
+
+        .zeus-status-metric--running {
+            --metric-bg: #FFFBEB;
+            --metric-color: #B45309;
+        }
+
+        .zeus-status-metric--paused,
+        .zeus-status-metric--suspended {
+            --metric-bg: #F8FAFC;
+            --metric-color: #475569;
+        }
+
+        .zeus-dashboard-table-wrap {
+            width: 100%;
+            overflow-x: auto;
+            margin-top: 0.65rem;
+            border: 1px solid var(--zeus-border);
+            border-radius: 8px;
+            background: #FFFFFF;
+            box-shadow: var(--zeus-shadow-subtle);
+        }
+
+        .zeus-dashboard-table {
+            width: 100%;
+            min-width: 980px;
+            border-collapse: collapse;
+            color: var(--zeus-text);
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }
+
+        .zeus-dashboard-table th {
+            padding: 0.62rem 0.72rem;
+            border-bottom: 1px solid var(--zeus-border);
+            background: #F8FAFC;
+            color: var(--zeus-text);
+            font-size: 0.73rem;
+            font-weight: 780;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        .zeus-dashboard-table td {
+            max-width: 260px;
+            padding: 0.62rem 0.72rem;
+            border-bottom: 1px solid #E8EEF5;
+            color: var(--zeus-text);
+            overflow-wrap: anywhere;
+            vertical-align: top;
+        }
+
+        .zeus-dashboard-table tr:nth-child(even) td {
+            background: #FBFCFE;
+        }
+
+        .zeus-dashboard-table tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .zeus-dashboard-table__link {
+            color: var(--zeus-primary-dark);
+            font-weight: 760;
+            text-decoration: none;
+        }
+
+        .zeus-dashboard-table__link:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 900px) {
+            .zeus-job-summary-card__metrics {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        </style>
+        <div class="zeus-dashboard-tabs"></div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _chart_colors(columns) -> List[str]:
@@ -43,20 +282,131 @@ def _chart_colors(columns) -> List[str]:
     ]
 
 
+def _status_metric_class(label: str) -> str:
+    normalized = str(label or "").strip().lower().replace(" ", "-")
+    return f"zeus-status-metric zeus-status-metric--{html.escape(normalized)}"
+
+
+def _job_type_summary_markup(title: str, subtitle: str, counts: Dict[str, int], accent: str) -> str:
+    metric_html = "".join(
+        (
+            f'<div class="{_status_metric_class(label)}">'
+            f'<span class="zeus-status-metric__label">{html.escape(label)}</span>'
+            f'<span class="zeus-status-metric__value">{int(counts.get(label, 0))}</span>'
+            "</div>"
+        )
+        for label in [column for column in KPI_COLUMNS if column != "Total Jobs"]
+    )
+    return (
+        f'<section class="zeus-job-summary-card" style="--summary-accent: {html.escape(accent)};">'
+        '<div class="zeus-job-summary-card__header">'
+        "<div>"
+        f'<h3 class="zeus-job-summary-card__title">{html.escape(title)}</h3>'
+        f'<p class="zeus-job-summary-card__subtitle">{html.escape(subtitle)}</p>'
+        "</div>"
+        '<div class="zeus-job-summary-card__total">'
+        f'<span class="zeus-job-summary-card__total-value">{int(counts.get("Total Jobs", 0))}</span>'
+        '<span class="zeus-job-summary-card__total-label">Total jobs</span>'
+        "</div>"
+        "</div>"
+        f'<div class="zeus-job-summary-card__metrics">{metric_html}</div>'
+        "</section>"
+    )
+
+
+def _job_type_summary_panel(title: str, subtitle: str, counts: Dict[str, int], accent: str) -> None:
+    st.html(_job_type_summary_markup(title, subtitle, counts, accent))
+
+
+def _render_snapshot_metadata(payload: Dict[str, Any]) -> None:
+    with page_panel("Snapshot Metadata"):
+        meta_cols = st.columns(2)
+        with meta_cols[0]:
+            st.caption("Snapshot source")
+            st.markdown(f"`{payload.get('source') or 'Unavailable'}`")
+        with meta_cols[1]:
+            st.caption("Last refreshed")
+            st.markdown(f"`{payload.get('last_refreshed') or 'Unavailable'}`")
+
+
+def _render_dashboard_table(
+    df: pd.DataFrame,
+    columns: Sequence[str],
+    link_view: Optional[str] = None,
+    return_tab: Optional[str] = None,
+) -> None:
+    if df.empty or not columns:
+        st.caption("No rows to display.")
+        return
+
+    header = "".join(f"<th>{html.escape(str(column))}</th>" for column in columns)
+    body_rows = []
+    for _, row in df.iterrows():
+        cells = []
+        for column in columns:
+            value = _dashboard_cell_text(row.get(column, ""))
+            if link_view and column == "Job ID" and value:
+                url = monitor_job_url(
+                    value,
+                    link_view,
+                    return_section="fleet_dashboard",
+                    return_tab=return_tab,
+                )
+                cells.append(
+                    '<td>'
+                    f'<a class="zeus-dashboard-table__link" href="{html.escape(url, quote=True)}" target="_self">'
+                    f"{html.escape(value)}</a>"
+                    "</td>"
+                )
+            else:
+                cells.append(f"<td>{html.escape(value)}</td>")
+        body_rows.append(f"<tr>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f"""
+        <div class="zeus-dashboard-table-wrap">
+            <table class="zeus-dashboard-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _dashboard_cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def _active_fleet_tab_label() -> str:
+    requested = query_param("fleet_tab").strip().lower()
+    return FLEET_TAB_PARAM_LABELS.get(requested, "Overview")
+
+
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
     auth = ctx.auth
 
-    render_page_header(
+    _render_dashboard_styles()
+
+    with page_header_actions(
         "Execute & Observe",
         "Fleet Dashboard",
         "Review fleet-level migration status across projects, databases, and ZDM jobs.",
-    )
+        key="fleet-dashboard-header-actions",
+    ):
+        refresh_gap, refresh_action = st.columns([0.52, 0.48], vertical_alignment="bottom")
+        with refresh_action:
+            refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
     render_workflow_back_button()
-
-    refresh_col, meta_col = st.columns([0.18, 0.82], vertical_alignment="center")
-    with refresh_col:
-        refresh_jobs = st.button("Refresh Jobs", type="primary", width='stretch')
 
     if refresh_jobs or "fleet_jobs_payload" not in st.session_state:
         payload = api_request(
@@ -81,14 +431,6 @@ def render(ctx: AppContext) -> None:
         st.info("No job snapshot available.")
         st.stop()
     payload = validate_payload_or_stop(payload_raw, validate_jobs_dashboard_response)
-
-    with meta_col:
-        details = []
-        if payload.get("source"):
-            details.append(f"Source: {payload.get('source')}")
-        if payload.get("last_refreshed"):
-            details.append(f"Last refreshed: {payload.get('last_refreshed')}")
-        st.caption(" · ".join(details) if details else "Snapshot metadata unavailable")
 
     warnings = payload.get("warnings") or []
     if warnings:
@@ -145,21 +487,14 @@ def render(ctx: AppContext) -> None:
     eval_fleet_df = zdm_fleet_dataframe(eval_jobs_df)
     migrate_fleet_df = zdm_fleet_dataframe(migrate_jobs_df)
 
-    def _render_kpis(title: str, counts: Dict[str, int]) -> None:
-        st.markdown(f"### {title}")
-        cols = st.columns(len(KPI_COLUMNS))
-        for col, label in zip(cols, KPI_COLUMNS):
-            with col:
-                st.metric(label, counts.get(label, 0))
-
     def _bar_chart(
         df: pd.DataFrame,
         index_col: str,
         group_col: str,
         title: str,
         missing_label: Optional[str] = None,
+        height: int = 270,
     ) -> None:
-        st.markdown(f"### {title}")
         if df.empty or index_col not in df.columns or group_col not in df.columns:
             st.info("No data available.")
             return
@@ -172,22 +507,49 @@ def render(ctx: AppContext) -> None:
         if counts.empty:
             st.info("No data available.")
             return
-        chart_df = counts.pivot(index=index_col, columns=group_col, values="Count").fillna(0)
-        st.bar_chart(chart_df, color=_chart_colors(chart_df.columns))
-
-    def _job_type_lane(title: str, kpis: Dict[str, int]) -> None:
-        st.markdown(f"## {title}")
-        _render_kpis(f"{title} Jobs", kpis)
+        counts[index_col] = counts[index_col].astype(str)
+        counts[group_col] = counts[group_col].astype(str)
+        color_domain = list(dict.fromkeys(counts[group_col].tolist()))
+        chart = (
+            alt.Chart(counts)
+            .mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2)
+            .encode(
+                x=alt.X(
+                    f"{index_col}:N",
+                    title=None,
+                    axis=alt.Axis(labelAngle=0, labelLimit=140, labelPadding=8),
+                    sort=None,
+                ),
+                y=alt.Y("Count:Q", title="Jobs", stack="zero", axis=alt.Axis(grid=True, tickMinStep=1)),
+                color=alt.Color(
+                    f"{group_col}:N",
+                    scale=alt.Scale(domain=color_domain, range=_chart_colors(color_domain)),
+                    legend=alt.Legend(title=None, orient="bottom", direction="horizontal"),
+                ),
+                tooltip=[
+                    alt.Tooltip(f"{index_col}:N", title=index_col),
+                    alt.Tooltip(f"{group_col}:N", title=group_col),
+                    alt.Tooltip("Count:Q", title="Jobs"),
+                ],
+            )
+            .properties(height=height, title=title)
+            .configure_title(anchor="start", fontSize=15, fontWeight=700, color="#1E293B", offset=12)
+            .configure_axis(labelColor="#64748B", titleColor="#475569", gridColor="#E2E8F0")
+            .configure_legend(labelColor="#64748B", labelFontSize=12, symbolSize=80)
+            .configure_view(strokeWidth=0)
+        )
+        st.altair_chart(chart, use_container_width=True)
 
     def _column_picker(df: pd.DataFrame, defaults: List[str], key: str) -> List[str]:
         available = [column for column in defaults if column in df.columns]
         extras = [column for column in df.columns if column not in available]
-        selected = st.multiselect(
-            "Columns to show",
-            available + extras,
-            default=available,
-            key=key,
-        )
+        with st.expander("Table columns", expanded=False):
+            selected = st.multiselect(
+                "Columns to show",
+                available + extras,
+                default=available,
+                key=key,
+            )
         return selected or available
 
     def _sort_dashboard_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -205,13 +567,6 @@ def render(ctx: AppContext) -> None:
             kind="stable",
         )
         return sorted_df.drop(columns=["_project_sort", "_type_sort", "_job_sort"])
-
-    def _with_job_links(df: pd.DataFrame, view: str) -> pd.DataFrame:
-        if df.empty or "Job ID" not in df.columns:
-            return df
-        linked = df.copy()
-        linked["Job ID"] = linked["Job ID"].apply(lambda value: monitor_job_url(value, view))
-        return linked
 
     def _fleet_status_display_df(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -245,27 +600,24 @@ def render(ctx: AppContext) -> None:
         key: str,
         empty_message: str,
         link_view: Optional[str] = None,
+        return_tab: Optional[str] = None,
     ) -> None:
         st.markdown(f"### {title}")
         if df.empty:
             st.info(empty_message)
             return
         table_df = _sort_dashboard_rows(df)
-        if link_view:
-            table_df = _with_job_links(table_df, link_view)
         display_df = table_df.rename(columns=table_column_labels)
         display_defaults = [table_column_labels.get(column, column) for column in defaults]
         columns = _column_picker(display_df, display_defaults, key)
-        column_config = {}
-        if link_view and "Job ID" in columns:
-            column_config["Job ID"] = st.column_config.LinkColumn(
-                "Job ID",
-                display_text=r"job_id=([^&]+)",
-                help="Open in ZDM Job Monitoring",
-            )
-        st_df_safe(display_df[columns], hide_index=True, width='stretch', column_config=column_config)
+        _render_dashboard_table(display_df[columns], columns, link_view, return_tab)
 
-    tabs = st.tabs(["Overview", "Fleet Status", "Job Details", "Failures", "Diagnostics"])
+    active_fleet_tab_label = _active_fleet_tab_label()
+    tabs = st.tabs(
+        FLEET_TAB_LABELS,
+        default=active_fleet_tab_label,
+        key=f"fleet_dashboard_tabs_{active_fleet_tab_label.lower().replace(' ', '_')}",
+    )
     eval_kpis = zdm_job_kpis(jobs_df, "EVAL")
     migrate_kpis = zdm_job_kpis(jobs_df, "MIGRATE")
     fleet_status_df = pd.concat(
@@ -274,31 +626,36 @@ def render(ctx: AppContext) -> None:
     )
 
     with tabs[0]:
+        st.markdown('<div class="zeus-dashboard-section-title">Job summary</div>', unsafe_allow_html=True)
         eval_lane, migrate_lane = st.columns(2)
         with eval_lane:
-            _job_type_lane("Eval", eval_kpis)
+            _job_type_summary_panel("Eval", "Evaluation readiness", eval_kpis, "#7C3AED")
         with migrate_lane:
-            _job_type_lane("Migrate", migrate_kpis)
-        st.divider()
-        _bar_chart(jobs_df, "Project", "Status Category", "Jobs By Project", missing_label="Outside ZEUS")
+            _job_type_summary_panel("Migrate", "Migration execution", migrate_kpis, "#0891B2")
+
+        with page_panel("Jobs By Project"):
+            _bar_chart(jobs_df, "Project", "Status Category", "Jobs By Project", missing_label="Outside ZEUS", height=300)
         chart_cols = st.columns(2)
         with chart_cols[0]:
-            _bar_chart(
-                jobs_df,
-                "Source Database",
-                "Status Category",
-                "Jobs By Source Database",
-                missing_label="Unknown Source DB",
-            )
+            with page_panel("Jobs By Source Database"):
+                _bar_chart(
+                    jobs_df,
+                    "Source Database",
+                    "Status Category",
+                    "Jobs By Source Database",
+                    missing_label="Unknown Source DB",
+                )
         with chart_cols[1]:
-            _bar_chart(
-                jobs_df,
-                "Source Node",
-                "Status Category",
-                "Jobs By Source Node",
-                missing_label="Unknown Source Node",
-            )
-        _bar_chart(fleet_status_df, "Fleet State", "Job Type", "Current Fleet State")
+            with page_panel("Jobs By Source Node"):
+                _bar_chart(
+                    jobs_df,
+                    "Source Node",
+                    "Status Category",
+                    "Jobs By Source Node",
+                    missing_label="Unknown Source Node",
+                )
+        with page_panel("Current Fleet State"):
+            _bar_chart(fleet_status_df, "Fleet State", "Job Type", "Current Fleet State")
 
     with tabs[1]:
         default_fleet_columns = [
@@ -322,6 +679,7 @@ def render(ctx: AppContext) -> None:
             "fleet_status_columns",
             "No fleet rows match the selected filters.",
             link_view="details",
+            return_tab="fleet_status",
         )
 
     with tabs[2]:
@@ -347,6 +705,7 @@ def render(ctx: AppContext) -> None:
             "job_detail_columns",
             "No jobs match the selected filters.",
             link_view="details",
+            return_tab="job_details",
         )
 
     with tabs[3]:
@@ -364,7 +723,8 @@ def render(ctx: AppContext) -> None:
             "Ended",
         ]
         failed_jobs_df = jobs_df[jobs_df["Status Category"] == "Failed"] if not jobs_df.empty else jobs_df
-        _bar_chart(failed_jobs_df, "Current Stage", "Job Type", "Failed Jobs By Stage")
+        with page_panel("Failed Jobs By Stage"):
+            _bar_chart(failed_jobs_df, "Current Stage", "Job Type", "Failed Jobs By Stage")
         _table_section(
             "Failures",
             failed_jobs_df,
@@ -372,7 +732,9 @@ def render(ctx: AppContext) -> None:
             "failure_columns",
             "No failed jobs match the selected filters.",
             link_view="logs",
+            return_tab="failures",
         )
 
     with tabs[4]:
+        _render_snapshot_metadata(payload)
         render_diagnostics(payload)

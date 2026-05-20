@@ -6,7 +6,7 @@ import streamlit as st
 
 from streamlit_shared.api_client import api_request, api_request_required, validate_payload_or_stop
 from streamlit_shared.api_payload import validate_job_query_response, validate_run_job_response
-from streamlit_shared.console_layout import render_page_header
+from streamlit_shared.console_layout import page_control_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.job_progress import (
     query_result_should_auto_refresh,
@@ -58,55 +58,54 @@ def render(ctx: AppContext) -> None:
 
     if st.session_state.get("runjob_saved_select") not in saved_job_names:
         st.session_state["runjob_saved_select"] = "-- Select saved job --"
-    saved_sel = st.selectbox("Saved job definitions", saved_job_names, key="runjob_saved_select")
-    if saved_jobs_unavailable:
-        st.error("ZEUS backend is not reachable. Saved job definitions cannot be loaded.")
-    c2, c3, c4 = st.columns([0.34, 0.33, 0.33])
-    with c2:
-        if st.button("View", key="runjob_view_saved_btn", width='stretch'):
-            if saved_sel != "-- Select saved job --":
-                clear_current_job_progress(st.session_state)
-                st.session_state["runjob_view_job"] = saved_sel
-                st.rerun()
-    with c3:
-        if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
-            if saved_sel != "-- Select saved job --":
-                job = saved_jobs_resp.get(saved_sel)
-                if job:
-                    try:
-                        payload = job_payload_from_saved_job(job)
-                    except ValueError as exc:
-                        _stop_on_saved_job_error(exc)
-                    data = api_request("post", "/jobs", api_base, auth, payload=payload)
-                    if data:
-                        validated = validate_payload_or_stop(data, validate_run_job_response)
-                        job_id = validated.get("job_id")
-                        script_path = validated.get("script_path")
-                        st.session_state["runjob_show_current_progress"] = True
-                        if job_id:
-                            st.success(f"Submitted saved job '{saved_sel}' as ZDM job {job_id}.")
-                            st.session_state["last_job_id"] = job_id
-                            st.session_state["runjob_current_job_autorefresh"] = True
-                            st.session_state["runjob_current_job_should_refresh"] = True
-                            st.session_state.pop("runjob_current_job_query_status", None)
-                            st.session_state.pop("runjob_current_job_query_job_id", None)
-                        else:
-                            st.warning(
-                                "The saved job was submitted, but ZEUS could not read the ZDM job ID "
-                                "from the submission output."
-                            )
-                        if script_path:
-                            st.caption(f"Run script: {script_path}")
-                        st.session_state[RUNJOB_SUBMISSION_RESULT_KEY] = validated
-                        st.session_state[RUNJOB_SUBMISSION_NAME_KEY] = saved_sel
-    with c4:
-        if st.button("Delete", key="runjob_delete_saved_btn", width='stretch'):
-            if saved_sel != "-- Select saved job --":
-                resp = api_request("delete", f"/saved-jobs/{saved_sel}", api_base, auth)
-                if resp:
-                    validate_payload_or_stop(resp, validate_saved_job_delete_response)
-                    st.success(f"Deleted saved job '{saved_sel}'")
+    with page_control_panel("job-submission-saved-job-controls"):
+        saved_sel = st.selectbox("Saved job definitions", saved_job_names, key="runjob_saved_select")
+        if saved_jobs_unavailable:
+            st.error("ZEUS backend is not reachable. Saved job definitions cannot be loaded.")
+        c2, c3, c4 = st.columns([0.34, 0.33, 0.33])
+        with c2:
+            if st.button("View", key="runjob_view_saved_btn", width='stretch'):
+                if saved_sel != "-- Select saved job --":
+                    clear_current_job_progress(st.session_state)
+                    st.session_state["runjob_view_job"] = saved_sel
                     st.rerun()
+        with c3:
+            if st.button("Run", key="runjob_run_saved_btn", width='stretch'):
+                if saved_sel != "-- Select saved job --":
+                    job = saved_jobs_resp.get(saved_sel)
+                    if job:
+                        try:
+                            payload = job_payload_from_saved_job(job)
+                        except ValueError as exc:
+                            _stop_on_saved_job_error(exc)
+                        data = api_request("post", "/jobs", api_base, auth, payload=payload)
+                        if data:
+                            validated = validate_payload_or_stop(data, validate_run_job_response)
+                            job_id = validated.get("job_id")
+                            script_path = validated.get("script_path")
+                            st.session_state["runjob_show_current_progress"] = True
+                            if job_id:
+                                _show_submission_toast(f"Submitted saved job '{saved_sel}' as ZDM job {job_id}.")
+                                st.session_state["last_job_id"] = job_id
+                                st.session_state["runjob_current_job_autorefresh"] = True
+                                st.session_state["runjob_current_job_should_refresh"] = True
+                                st.session_state.pop("runjob_current_job_query_status", None)
+                                st.session_state.pop("runjob_current_job_query_job_id", None)
+                            else:
+                                st.warning(
+                                    "The saved job was submitted, but ZEUS could not read the ZDM job ID "
+                                    "from the submission output."
+                                )
+                            st.session_state[RUNJOB_SUBMISSION_RESULT_KEY] = validated
+                            st.session_state[RUNJOB_SUBMISSION_NAME_KEY] = saved_sel
+        with c4:
+            if st.button("Delete", key="runjob_delete_saved_btn", width='stretch'):
+                if saved_sel != "-- Select saved job --":
+                    resp = api_request("delete", f"/saved-jobs/{saved_sel}", api_base, auth)
+                    if resp:
+                        validate_payload_or_stop(resp, validate_saved_job_delete_response)
+                        st.success(f"Deleted saved job '{saved_sel}'")
+                        st.rerun()
 
     view_job_name = st.session_state.pop("runjob_view_job", "")
     if view_job_name and view_job_name in saved_jobs_resp:
@@ -285,3 +284,8 @@ def _stop_on_saved_job_error(exc: ValueError) -> None:
     with st.expander("Technical details", expanded=False):
         st.code(str(exc))
     st.stop()
+
+
+def _show_submission_toast(message: str) -> None:
+    if hasattr(st, "toast"):
+        st.toast(message)

@@ -14,6 +14,8 @@ from streamlit_shared.console_layout import page_panel, render_page_header
 from streamlit_shared.context import AppContext
 from streamlit_shared.db_types import db_connection_names_for_role
 from streamlit_shared.navigation import render_workflow_back_button
+from streamlit_shared.response_file_form import active_migration_method_options
+from streamlit_shared.ui import native_table_height
 
 def render(ctx: AppContext) -> None:
     api_base = ctx.api_base
@@ -38,24 +40,39 @@ def render(ctx: AppContext) -> None:
         if projects_raw is not None
         else {}
     )
-    source_conn_names = ["-- Select connection --"] + list(
-        db_connection_names_for_role(connections_cache, "source")
-    )
-    target_conn_names = ["-- Select connection --"] + list(
-        db_connection_names_for_role(connections_cache, "target")
-    )
+    source_conn_names = ["-- Select connection --"] + [
+        name
+        for name in db_connection_names_for_role(connections_cache, "source")
+        if connections_cache.get(name, {}).get("credential_wallet_name")
+    ]
+    target_conn_names = ["-- Select connection --"] + [
+        name
+        for name in db_connection_names_for_role(connections_cache, "target")
+        if connections_cache.get(name, {}).get("credential_wallet_name")
+    ]
     if st.session_state.get("target_conn_select") not in target_conn_names:
         st.session_state["target_conn_select"] = "-- Select connection --"
+    migration_methods = active_migration_method_options()
+    if st.session_state.get("project_migration_method") not in migration_methods:
+        st.session_state["project_migration_method"] = next(iter(migration_methods), "")
 
-    with page_panel("Create project"):
-        with st.form("create_project", border=False):
-            project_name = st.text_input(
-                "Project name",
-                help="Lowercase letters + numbers + dash/underscore only. Used as response file name.",
-            )
-            source_conn = st.selectbox("Source connection", source_conn_names)
-            target_conn = st.selectbox("Target connection", target_conn_names, key="target_conn_select")
-            project_clicked = st.form_submit_button("Create project", type="primary")
+    tabs = st.tabs(["Create project", "Saved projects"])
+
+    with tabs[0]:
+        with page_panel("Create project", width="form"):
+            with st.form("create_project", border=False):
+                project_name = st.text_input(
+                    "Project name",
+                    help="Lowercase letters + numbers + dash/underscore only. Used as response file name.",
+                )
+                source_conn = st.selectbox("Source connection", source_conn_names)
+                target_conn = st.selectbox("Target connection", target_conn_names, key="target_conn_select")
+                method_label = st.selectbox(
+                    "Migration method",
+                    list(migration_methods.keys()),
+                    key="project_migration_method",
+                )
+                project_clicked = st.form_submit_button("Create project", type="primary")
 
     def valid_project(name: str) -> bool:
         return bool(name) and name.islower() and all(c.isalnum() or c in "-_" for c in name)
@@ -68,7 +85,12 @@ def render(ctx: AppContext) -> None:
         elif project_name in projects_resp:
             st.error("Project already exists. Delete it before creating it again.")
         else:
-            payload = {"name": project_name, "source_connection": source_conn, "target_connection": target_conn}
+            payload = {
+                "name": project_name,
+                "source_connection": source_conn,
+                "target_connection": target_conn,
+                "migration_method": migration_methods[method_label],
+            }
             data = api_request("post", "/projects", api_base, auth, payload=payload)
             if data:
                 validated = validate_payload_or_stop(
@@ -79,65 +101,76 @@ def render(ctx: AppContext) -> None:
                 st.success(validated["message"])
                 st.rerun()
 
-    with page_panel("Existing projects"):
-        if projects_raw is None:
-            st.error("ZEUS backend is not reachable. Existing projects cannot be loaded.")
-            return
+    with tabs[1]:
+        with page_panel("Saved projects"):
+            if projects_raw is None:
+                st.error("ZEUS backend is not reachable. Existing projects cannot be loaded.")
+                return
 
-        if not projects_resp:
-            st.info("No projects created yet.")
-            return
+            if not projects_resp:
+                st.info("No projects created yet.")
+                return
 
-        rows = []
-        for name, project in projects_resp.items():
-            project_info = project
-            rows.append(
-                {
-                    "Name": name,
-                    "Source": project_info.get("source_connection", ""),
-                    "Target": project_info.get("target_connection", ""),
-                    "Response File": project_info.get("rsp", ""),
-                    "Migration Method": project_info.get("migration_method", ""),
-                    "Delete?": False,
-                }
+            rows = []
+            for name, project in projects_resp.items():
+                project_info = project
+                rows.append(
+                    {
+                        "Name": name,
+                        "Source": project_info.get("source_connection", ""),
+                        "Target": project_info.get("target_connection", ""),
+                        "Response File": project_info.get("rsp", ""),
+                        "Migration Method": project_info.get("migration_method", ""),
+                        "Delete": False,
+                    }
+                )
+
+            edited_df = st.data_editor(
+                pd.DataFrame(rows),
+                hide_index=True,
+                num_rows="fixed",
+                width="stretch",
+                height=native_table_height(len(rows)),
+                disabled=["Name", "Source", "Target", "Response File", "Migration Method"],
+                column_config={
+                    "Name": st.column_config.TextColumn("Name", pinned=True),
+                    "Source": st.column_config.TextColumn("Source"),
+                    "Target": st.column_config.TextColumn("Target"),
+                    "Response File": st.column_config.TextColumn("Response File"),
+                    "Migration Method": st.column_config.TextColumn("Migration Method"),
+                    "Delete": st.column_config.CheckboxColumn("Delete"),
+                },
+                key="project_delete_editor",
             )
+            to_delete = [
+                str(row.get("Name"))
+                for row in edited_df.to_dict("records")
+                if bool(row.get("Delete")) and row.get("Name")
+            ]
+            confirm_delete = False
+            if to_delete:
+                st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
+                confirm_delete = st.checkbox(
+                    "Confirm deletion",
+                    key="project_delete_confirm",
+                )
 
-        edited = st.data_editor(
-            pd.DataFrame(rows),
-            hide_index=True,
-            width='stretch',
-            column_config={
-                "Name": st.column_config.TextColumn(disabled=True),
-                "Source": st.column_config.TextColumn(disabled=True),
-                "Target": st.column_config.TextColumn(disabled=True),
-                "Response File": st.column_config.TextColumn(disabled=True),
-                "Migration Method": st.column_config.TextColumn(disabled=True),
-                "Delete?": st.column_config.CheckboxColumn(),
-            },
-            key="project_editor",
-        )
+            action_cols = st.columns([0.88, 0.12])
+            with action_cols[-1]:
+                delete_clicked = st.button("Delete", type="secondary", width="stretch", disabled=bool(to_delete) and not confirm_delete)
 
-        to_delete = [row["Name"] for _, row in edited.iterrows() if row.get("Delete?", False)]
-        confirm_delete = False
-        if to_delete:
-            st.warning("Project deletion removes response files, generated scripts, and saved job definitions.")
-            confirm_delete = st.checkbox(
-                "Confirm deletion",
-                key="project_delete_confirm",
-            )
-
-        if st.button("Delete checked projects", type="secondary", disabled=bool(to_delete) and not confirm_delete):
-            if not to_delete:
-                st.info("No projects selected for deletion.")
-            else:
-                deleted = 0
-                for name in to_delete:
-                    resp = api_request("delete", f"/projects/{name}", api_base, auth)
-                    if resp:
-                        validate_payload_or_stop(resp, validate_project_delete_response)
-                        deleted += 1
-                st.success(f"Deleted {deleted} project{'s' if deleted != 1 else ''}.")
-                st.session_state.pop("project_delete_confirm", None)
-                st.rerun()
+            if delete_clicked:
+                if not to_delete:
+                    st.info("No projects selected for deletion.")
+                else:
+                    deleted = 0
+                    for name in to_delete:
+                        resp = api_request("delete", f"/projects/{name}", api_base, auth)
+                        if resp:
+                            validate_payload_or_stop(resp, validate_project_delete_response)
+                            deleted += 1
+                    st.success(f"Deleted {deleted} project{'s' if deleted != 1 else ''}.")
+                    st.session_state.pop("project_delete_confirm", None)
+                    st.rerun()
 
     # -----------------------------

@@ -239,6 +239,10 @@ def default_method(migration_type: str) -> str:
     return options[0] if options else ""
 
 
+def migration_type_for_method(migration_method: Any) -> str:
+    return str(_profile_for_method(migration_method).migration_type)
+
+
 def response_method_supported(migration_method: Any) -> bool:
     return response_file_supported(migration_method)
 

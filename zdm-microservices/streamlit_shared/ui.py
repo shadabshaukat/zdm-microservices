@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-from typing import Any
+import html
+import json
+from typing import Any, Mapping, Sequence
 from urllib.parse import quote
 
 import pandas as pd
 import streamlit as st
+
+
+def native_table_height(row_count: int, *, min_rows: int = 1, max_rows: int = 24) -> int:
+    """Return a Streamlit table height that expands for normal result sets."""
+    try:
+        parsed_count = int(row_count)
+    except (TypeError, ValueError):
+        parsed_count = 0
+    visible_rows = max(min_rows, min(parsed_count, max_rows))
+    return 42 + (visible_rows * 35)
 
 
 def st_df_safe(df: pd.DataFrame, **kwargs):
@@ -25,7 +37,81 @@ def st_df_safe(df: pd.DataFrame, **kwargs):
 
 def render_diagnostics(payload: Any, label: str = "Diagnostics") -> None:
     with st.expander(label, expanded=False):
-        st.json(payload, expanded=False)
+        try:
+            text = json.dumps(payload, indent=2, sort_keys=True, default=str)
+        except TypeError:
+            text = str(payload)
+        st.code(text, language="json", wrap_lines=True)
+
+
+def render_static_table(
+    rows: Sequence[Mapping[str, Any]],
+    columns: Sequence[str],
+    *,
+    empty_message: str = "No rows to display.",
+) -> None:
+    if not rows:
+        st.caption(empty_message)
+        return
+
+    header = "".join(f"<th>{html.escape(str(column))}</th>" for column in columns)
+    body_rows = []
+    for row in rows:
+        cells = "".join(
+            f"<td>{html.escape(_table_cell(row.get(column)))}</td>"
+            for column in columns
+        )
+        body_rows.append(f"<tr>{cells}</tr>")
+
+    st.markdown(
+        f"""
+        <style>
+        .zeus-static-table-wrap {{
+            width: 100%;
+            overflow-x: auto;
+            margin: 0.35rem 0 0.8rem 0;
+        }}
+        .zeus-static-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+            line-height: 1.35;
+        }}
+        .zeus-static-table th {{
+            padding: 0.55rem 0.65rem;
+            border-bottom: 1px solid #CBD5E1;
+            color: #475569;
+            font-weight: 680;
+            text-align: left;
+            white-space: nowrap;
+        }}
+        .zeus-static-table td {{
+            padding: 0.52rem 0.65rem;
+            border-bottom: 1px solid #E2E8F0;
+            color: #1E293B;
+            vertical-align: top;
+        }}
+        .zeus-static-table tr:last-child td {{
+            border-bottom: 0;
+        }}
+        </style>
+        <div class="zeus-static-table-wrap">
+            <table class="zeus-static-table">
+                <thead><tr>{header}</tr></thead>
+                <tbody>{''.join(body_rows)}</tbody>
+            </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _table_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    return str(value)
 
 
 def param_help(key: str, extra: str = "") -> str:
@@ -53,9 +139,22 @@ def query_param(name: str, default: str = "") -> str:
     return str(value or default)
 
 
-def monitor_job_url(job_id: Any, view: str = "details") -> str:
+def monitor_job_url(
+    job_id: Any,
+    view: str = "details",
+    *,
+    return_section: str | None = None,
+    return_tab: str | None = None,
+) -> str:
     job_id_text = str(job_id or "").strip()
     if not job_id_text:
         return ""
     view_text = "logs" if str(view).lower() == "logs" else "details"
-    return f"?section=jobs&job_id={quote(job_id_text)}&view={view_text}"
+    url = f"?section=jobs&job_id={quote(job_id_text)}&view={view_text}"
+    return_section_text = str(return_section or "").strip()
+    return_tab_text = str(return_tab or "").strip()
+    if return_section_text:
+        url = f"{url}&return_section={quote(return_section_text)}"
+    if return_tab_text:
+        url = f"{url}&return_tab={quote(return_tab_text)}"
+    return url

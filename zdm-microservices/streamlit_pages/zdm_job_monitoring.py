@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 from typing import List
+from urllib.parse import quote
 
 import streamlit as st
 
@@ -23,6 +24,13 @@ from streamlit_shared.navigation import render_workflow_back_button
 from streamlit_shared.ui import query_param
 
 
+FLEET_RETURN_TAB_LABELS = {
+    "fleet_status": "Fleet Status",
+    "job_details": "Job Details",
+    "failures": "Failures",
+}
+
+
 def render_log_line_html(line: str) -> str:
     escaped = html.escape(str(line))
     upper = str(line).upper()
@@ -31,6 +39,50 @@ def render_log_line_html(line: str) -> str:
     if "WARN" in upper:
         return f"<span style='color:#f0a500'>{escaped}</span>"
     return escaped
+
+
+def render_fleet_return_button() -> None:
+    return_section = query_param("return_section").strip()
+    return_tab = query_param("return_tab").strip().lower()
+    return_label = FLEET_RETURN_TAB_LABELS.get(return_tab)
+    if return_section != "fleet_dashboard" or not return_label:
+        return
+
+    return_href = f"?section=fleet_dashboard&fleet_tab={quote(return_tab)}"
+    st.markdown(
+        f"""
+        <style>
+        .zeus-fleet-return {{
+            display: inline-flex;
+            align-items: center;
+            min-height: 34px;
+            margin: clamp(-1.05rem, -1.8vh, -0.85rem) 0 clamp(0.8rem, 1.45vh, 1rem) 0;
+            padding: 7px 14px;
+            border: 1px solid #3B82F6;
+            border-radius: 8px;
+            background: #FFFFFF;
+            color: #2563EB;
+            font-size: 0.86rem;
+            font-weight: 640;
+            line-height: 1.2;
+            text-decoration: none !important;
+            white-space: nowrap;
+        }}
+        .zeus-fleet-return:hover {{
+            background: #EFF6FF;
+            color: #1D4ED8;
+            text-decoration: none !important;
+        }}
+        .zeus-fleet-return:visited {{
+            color: #2563EB;
+        }}
+        </style>
+        <a class="zeus-fleet-return" href="{html.escape(return_href, quote=True)}" target="_self">
+            ← Back to {html.escape(return_label)}
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render(ctx: AppContext) -> None:
@@ -43,6 +95,7 @@ def render(ctx: AppContext) -> None:
         "Monitor ZDM job status, phases, result files, and generated logs.",
     )
     render_workflow_back_button()
+    render_fleet_return_button()
 
     deep_link_job_id = query_param("job_id").strip()
     deep_link_view = "Logs" if query_param("view").lower() == "logs" else "Latest result"

@@ -35,12 +35,14 @@ try:
     from .zdm_rules.environments import (
         CONNECTION_ENVIRONMENTS,
         db_connection_zdm_keys_for_role,
+        db_connection_type_supports_method,
         db_connection_type_supports_role,
         normalize_connection_role,
         normalize_connection_type,
         project_environment_response_values,
         project_rule_group_values,
     )
+    from .zdm_rules.discovery import compare_discovery_snapshots
     from .zdm_rules.jobs import build_migrate_command, validate_job_run_controls
     from .zdm_rules.responsefile import build_response_file_lines
 except ImportError:
@@ -48,12 +50,14 @@ except ImportError:
     from zdm_rules.environments import (
         CONNECTION_ENVIRONMENTS,
         db_connection_zdm_keys_for_role,
+        db_connection_type_supports_method,
         db_connection_type_supports_role,
         normalize_connection_role,
         normalize_connection_type,
         project_environment_response_values,
         project_rule_group_values,
     )
+    from zdm_rules.discovery import compare_discovery_snapshots
     from zdm_rules.jobs import build_migrate_command, validate_job_run_controls
     from zdm_rules.responsefile import build_response_file_lines
 
@@ -366,15 +370,15 @@ def _optional_api_text(record: Dict[str, Any], endpoint: str, record_name: str, 
 def _project_api_record(record_name: str, record: Any, endpoint: str = "GET /projects") -> Dict[str, Any]:
     if not isinstance(record, dict):
         _api_contract_error(endpoint, f"{record_name} must be an object")
-    required = {"name", "rsp", "source_connection", "target_connection"}
-    optional = {"migration_method", "jobs"}
+    required = {"name", "rsp", "source_connection", "target_connection", "migration_method"}
+    optional = {"jobs"}
     _api_record_keys(record, endpoint, record_name, required, optional)
     if record.get("name") != record_name:
         _api_contract_error(endpoint, f"{record_name}.name must match its record key")
     _optional_api_text(record, endpoint, record_name, "rsp")
     _require_api_text(record, endpoint, record_name, "source_connection")
     _require_api_text(record, endpoint, record_name, "target_connection")
-    _optional_api_text(record, endpoint, record_name, "migration_method")
+    _require_api_text(record, endpoint, record_name, "migration_method")
     jobs = record.get("jobs")
     if jobs is not None:
         if not isinstance(jobs, dict):
@@ -416,7 +420,7 @@ def _dbconnection_api_record(
         "protocol",
         "allow_tls_without_wallet",
     }
-    optional = {"tls_wallet_uploaded_dir"}
+    optional = {"tls_wallet_uploaded_dir", "credential_wallet_name"}
     _api_record_keys(record, endpoint, record_name, required, optional, allow_extra=allow_storage_extra)
     if record.get("name") != record_name:
         _api_contract_error(endpoint, f"{record_name}.name must match its record key")
@@ -435,6 +439,7 @@ def _dbconnection_api_record(
     if not isinstance(record.get("allow_tls_without_wallet"), bool):
         _api_contract_error(endpoint, f"{record_name}.allow_tls_without_wallet must be a boolean")
     _optional_api_text(record, endpoint, record_name, "tls_wallet_uploaded_dir")
+    _optional_api_text(record, endpoint, record_name, "credential_wallet_name")
     response_keys = [
         "name",
         "host",
@@ -445,11 +450,11 @@ def _dbconnection_api_record(
         "protocol",
         "allow_tls_without_wallet",
         "tls_wallet_uploaded_dir",
+        "credential_wallet_name",
     ]
     return {
-        key: record[key]
+        key: record.get(key)
         for key in response_keys
-        if key in record
     }
 
 
@@ -466,6 +471,8 @@ def _require_project_connection_role(
     connection_name: Optional[str],
     role: str,
     field_name: str,
+    *,
+    validate_type: bool = True,
 ) -> str:
     name = _validate_connection_name(connection_name or "")
     info = connections.get(name)
@@ -473,8 +480,61 @@ def _require_project_connection_role(
         raise HTTPException(status_code=400, detail=f"{field_name} references an unknown connection")
     if normalize_connection_role(info.get("connection_role")) != role:
         raise HTTPException(status_code=400, detail=f"{field_name} must reference a {role} connection")
-    _validate_connection_type_for_role(info.get("db_type"), role)
+    if validate_type:
+        _validate_connection_type_for_role(info.get("db_type"), role)
     return name
+
+
+def _connection_credential_wallet_ready(wallet_name: Any) -> bool:
+    name = str(wallet_name or "").strip()
+    if not name:
+        return False
+    wallet_path = resolve_cred_wallet_path(name)
+    return os.path.isdir(wallet_path) and bool(_credential_wallet_username_for_validation(name))
+
+
+def _validate_connection_credential_wallet_for_save(payload: Dict[str, Any]) -> None:
+    wallet_name = str(payload.get("credential_wallet_name") or "").strip()
+    if not wallet_name:
+        raise HTTPException(status_code=400, detail="credential_wallet_name is required")
+    if not _connection_credential_wallet_ready(wallet_name):
+        wallet_path = resolve_cred_wallet_path(wallet_name)
+        if not os.path.isdir(wallet_path):
+            raise HTTPException(status_code=400, detail=f"Credential wallet '{wallet_name}' was not found")
+        raise HTTPException(
+            status_code=400,
+            detail="The selected credential wallet has no stored credential. Add a credential first.",
+        )
+    payload["credential_wallet_name"] = wallet_name
+
+
+def _validate_project_connection_wallet(conn_info: Dict[str, Any], role: str) -> None:
+    label = role.title()
+    wallet_name = str(conn_info.get("credential_wallet_name") or "").strip()
+    if not wallet_name:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} connection is missing a credential wallet. Update the DB connection before creating the project.",
+        )
+    if not _connection_credential_wallet_ready(wallet_name):
+        wallet_path = resolve_cred_wallet_path(wallet_name)
+        if not os.path.isdir(wallet_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {role} credential wallet was not found. Choose another wallet on the DB Connections page.",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"The {role} credential wallet has no stored credential. Add a credential first.",
+        )
+
+
+def _validate_project_connection_method_support(conn_info: Dict[str, Any], role: str, migration_method: str) -> None:
+    if not db_connection_type_supports_method(conn_info.get("db_type"), role, migration_method):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{role} connection does not support {migration_method}",
+        )
 
 
 def _project_environment_values_or_400(
@@ -773,7 +833,14 @@ def _sync_project_response_metadata(project: str, migration_method: Optional[str
 
     normalized_method = _normalize_migration_method(migration_method)
     if normalized_method:
-        projects[project]["migration_method"] = normalized_method
+        project_method = _normalize_migration_method(projects[project].get("migration_method"))
+        if not project_method:
+            raise HTTPException(status_code=400, detail="Project migration_method is required")
+        if project_method != normalized_method:
+            raise HTTPException(
+                status_code=400,
+                detail="Response file migration_method must match project migration_method",
+            )
 
     save_projects(projects)
 
@@ -833,6 +900,12 @@ def _compile_responsefile_lines(project: str, migration_method: str, values: Dic
     project = _validate_project_name(project)
     project_record = _load_project_or_404(project)
     normalized_method = _require_migration_method(migration_method)
+    project_method = _require_migration_method(project_record.get("migration_method"))
+    if project_method != normalized_method:
+        raise HTTPException(
+            status_code=400,
+            detail="Response file migration_method must match project migration_method",
+        )
     if not isinstance(values, dict):
         raise HTTPException(status_code=400, detail="values must be an object")
 
@@ -1576,19 +1649,68 @@ def get_sql_bucket(section: str) -> Dict[str, str]:
     return bucket if isinstance(bucket, dict) else {}
 
 
-def derive_container_label(snapshot: Dict[str, Any]) -> str:
+def _snapshot_dict_value(payload: Dict[str, Any], key: str) -> Any:
+    if key in payload:
+        return payload[key]
+    key_upper = key.upper()
+    for item_key, item_value in payload.items():
+        if str(item_key).upper() == key_upper:
+            return item_value
+    return None
+
+
+def derive_connected_container(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     ctx = snapshot.get("container_context") or {}
     curr = snapshot.get("current_container_details") or {}
     cont = snapshot.get("container_info") or {}
-    con_name = ctx.get("CON_NAME") or curr.get("NAME") or cont.get("CONTAINER_NAME") or ""
+    db_info = snapshot.get("db_info") or {}
+
+    ctx = ctx if isinstance(ctx, dict) else {}
+    curr = curr if isinstance(curr, dict) else {}
+    cont = cont if isinstance(cont, dict) else {}
+    db_info = db_info if isinstance(db_info, dict) else {}
+
+    db_name = _snapshot_dict_value(db_info, "NAME") or _snapshot_dict_value(db_info, "DB_NAME")
+    cdb_flag = str(_snapshot_dict_value(db_info, "CDB") or "").strip().upper()
+    con_name = (
+        _snapshot_dict_value(ctx, "CON_NAME")
+        or _snapshot_dict_value(curr, "NAME")
+        or _snapshot_dict_value(cont, "CONTAINER_NAME")
+        or ""
+    )
+    cdb_name = _snapshot_dict_value(ctx, "CDB_NAME") or _snapshot_dict_value(curr, "CDB_NAME") or db_name
     con_name_up = str(con_name).upper()
-    if con_name_up == "CDB$ROOT":
-        return "CDB$ROOT"
-    if con_name_up == "PDB$SEED":
-        return "PDB$SEED"
-    if con_name_up:
-        return f"PDB: {con_name_up}"
-    return "Unknown container"
+    cdb_name_display = str(cdb_name or "").strip()
+
+    if cdb_flag == "NO":
+        display = f"Non-CDB: {db_name}" if db_name else "Non-CDB"
+        container_type = "NON_CDB"
+    elif con_name_up == "CDB$ROOT":
+        display = f"CDB root: {cdb_name_display}" if cdb_name_display else "CDB root"
+        container_type = "CDB_ROOT"
+    elif con_name_up == "PDB$SEED":
+        display = "PDB seed: PDB$SEED"
+        container_type = "PDB_SEED"
+    elif con_name_up:
+        display = f"PDB: {con_name_up}"
+        container_type = "PDB"
+    else:
+        display = "Unknown container"
+        container_type = "UNKNOWN"
+
+    return {
+        "display": display,
+        "container_name": con_name_up or None,
+        "cdb_name": cdb_name_display or None,
+        "container_type": container_type,
+    }
+
+
+def derive_container_label(snapshot: Dict[str, Any]) -> str:
+    connected_container = snapshot.get("connected_container")
+    if isinstance(connected_container, dict) and connected_container.get("display"):
+        return str(connected_container["display"])
+    return str(derive_connected_container(snapshot).get("display") or "Unknown container")
 
 
 def derive_platform_type(snapshot: Dict[str, Any]) -> str:
@@ -1828,6 +1950,7 @@ def _collect_db_snapshot(
         connection.close()
 
     # derived fields
+    snapshot["connected_container"] = derive_connected_container(snapshot)
     snapshot["container_label"] = derive_container_label(snapshot)
     snapshot["platform_type"] = derive_platform_type(snapshot)
     snapshot["raw_queries"] = raw_queries
@@ -1835,7 +1958,9 @@ def _collect_db_snapshot(
     # persist raw and processed snapshots separately
     try:
         disc_dir = get_discovery_dir()
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        captured_at = datetime.now(timezone.utc)
+        ts = captured_at.strftime("%Y%m%dT%H%M%SZ")
+        snapshot["captured_at"] = captured_at.isoformat().replace("+00:00", "Z")
         base_fname = _discovery_snapshot_base_filename(conn_name, conn_info, ts)
         snap_path = os.path.join(disc_dir, f"{base_fname}_snapshot.json")
         raw_path = os.path.join(disc_dir, f"{base_fname}_raw.json")
@@ -1843,6 +1968,7 @@ def _collect_db_snapshot(
             json.dump(snapshot, handle, indent=2, default=str)
         with open(raw_path, "w", encoding="utf-8") as handle:
             json.dump(raw_queries, handle, indent=2, default=str)
+        _write_method_discovery_files(conn_name, mig, ts, snapshot, raw_queries)
     except Exception:
         # non-fatal: continue even if writing snapshot fails
         pass
@@ -1944,6 +2070,176 @@ def get_discovery_dir() -> str:
     return path
 
 
+def _discovery_method_dir(connection_name: str, migration_method: str, *, create: bool = False) -> Path:
+    safe_connection = _validate_connection_name(connection_name)
+    method = normalize_discovery_migration_type(migration_method)
+    base_dir = Path(get_discovery_dir()).resolve(strict=False)
+    target_dir = (base_dir / safe_connection / method).resolve(strict=False)
+    try:
+        target_dir.relative_to(base_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid discovery snapshot path") from exc
+    if create:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
+
+
+def _write_method_discovery_files(
+    connection_name: str,
+    migration_method: str,
+    timestamp: str,
+    snapshot: Dict[str, Any],
+    raw_queries: Dict[str, Any],
+) -> Dict[str, str]:
+    method_dir = _discovery_method_dir(connection_name, migration_method, create=True)
+    safe_ts = _safe_filename_component(timestamp, "snapshot")
+    snap_path = method_dir / f"{safe_ts}_snapshot.json"
+    raw_path = method_dir / f"{safe_ts}_raw.json"
+    snap_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
+    raw_path.write_text(json.dumps(raw_queries, indent=2, default=str), encoding="utf-8")
+    return {"snapshot": str(snap_path), "raw": str(raw_path)}
+
+
+def _normalize_discovery_snapshot_for_api(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(snapshot)
+    if not isinstance(normalized.get("connected_container"), dict):
+        normalized["connected_container"] = derive_connected_container(normalized)
+    if not normalized.get("container_label"):
+        normalized["container_label"] = derive_container_label(normalized)
+    if not normalized.get("platform_type"):
+        normalized["platform_type"] = derive_platform_type(normalized)
+    return normalized
+
+
+def _latest_method_discovery_snapshot(connection_name: str, migration_method: str) -> Dict[str, Any]:
+    method_dir = _discovery_method_dir(connection_name, migration_method, create=False)
+    if not method_dir.exists():
+        return {"status": "missing", "file": None, "snapshot": None}
+    snapshot_files = sorted(method_dir.glob("*_snapshot.json"), key=lambda path: (path.name, path.stat().st_mtime))
+    if not snapshot_files:
+        return {"status": "missing", "file": None, "snapshot": None}
+    latest = snapshot_files[-1]
+    try:
+        snapshot = json.loads(latest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"status": "failed", "file": str(latest), "snapshot": None, "message": f"Discovery snapshot could not be read: {exc}"}
+    if not isinstance(snapshot, dict):
+        return {"status": "failed", "file": str(latest), "snapshot": None, "message": "Discovery snapshot is not a JSON object."}
+    snapshot = _normalize_discovery_snapshot_for_api(snapshot)
+    return {"status": "available", "file": str(latest), "snapshot": snapshot}
+
+
+def _method_display_name(migration_method: Any) -> str:
+    return str(migration_method or "").replace("_", " ").title()
+
+
+def _snapshot_api_status(
+    role: str,
+    connection_name: str,
+    migration_method: str,
+    latest: Dict[str, Any],
+    *,
+    error_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    snapshot = latest.get("snapshot") if isinstance(latest.get("snapshot"), dict) else None
+    status = "failed" if error_message else str(latest.get("status") or "missing")
+    message = error_message or latest.get("message")
+    if status == "missing":
+        message = (
+            f"No {_method_display_name(migration_method)} discovery snapshot is available for the {role} connection. "
+            "Refresh discovery to capture one."
+        )
+    summary = _snapshot_summary(snapshot or {})
+    return {
+        "status": status,
+        "connection_name": connection_name,
+        "captured_at": (snapshot or {}).get("captured_at"),
+        "migration_method": migration_method,
+        "summary": summary,
+        "message": message,
+    }
+
+
+def _snapshot_summary(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    db_info = snapshot.get("db_info") if isinstance(snapshot.get("db_info"), dict) else {}
+    role_info = snapshot.get("db_role_open_mode_base") if isinstance(snapshot.get("db_role_open_mode_base"), dict) else {}
+    rac_info = snapshot.get("rac_info") if isinstance(snapshot.get("rac_info"), dict) else {}
+    connected_container = snapshot.get("connected_container") if isinstance(snapshot.get("connected_container"), dict) else {}
+    return {
+        "database_name": db_info.get("NAME") or db_info.get("name"),
+        "database_unique_name": db_info.get("DB_UNIQUE_NAME") or db_info.get("db_unique_name"),
+        "platform_type": snapshot.get("platform_type"),
+        "container_label": connected_container.get("display") or snapshot.get("container_label"),
+        "database_role": role_info.get("DATABASE_ROLE") or role_info.get("database_role"),
+        "open_mode": role_info.get("OPEN_MODE") or role_info.get("open_mode"),
+        "rac": rac_info.get("RAC") or rac_info.get("rac"),
+        "instance_count": rac_info.get("INSTANCE_COUNT") or rac_info.get("instance_count"),
+    }
+
+
+def _database_discovery_project_context(project: str, *, require_wallets: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], str, str, str]:
+    project_name = _validate_project_name(project)
+    project_record = _load_project_or_404(project_name)
+    migration_method = _require_migration_method(project_record.get("migration_method"))
+    connections = load_connections()
+    source_name = _require_project_connection_role(
+        connections,
+        project_record.get("source_connection"),
+        "source",
+        "source_connection",
+        validate_type=False,
+    )
+    target_name = _require_project_connection_role(
+        connections,
+        project_record.get("target_connection"),
+        "target",
+        "target_connection",
+        validate_type=False,
+    )
+    source_info = connections[source_name]
+    target_info = connections[target_name]
+    _validate_project_connection_method_support(source_info, "source", migration_method)
+    _validate_project_connection_method_support(target_info, "target", migration_method)
+    if require_wallets:
+        _validate_project_connection_wallet(source_info, "source")
+        _validate_project_connection_wallet(target_info, "target")
+    return project_record, source_info, target_info, source_name, target_name, migration_method
+
+
+def _project_database_discovery_response(
+    project: str,
+    *,
+    snapshot_errors: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    project_record, _source_info, _target_info, source_name, target_name, migration_method = _database_discovery_project_context(project)
+    source_latest = _latest_method_discovery_snapshot(source_name, migration_method)
+    target_latest = _latest_method_discovery_snapshot(target_name, migration_method)
+    errors = snapshot_errors or {}
+    source_snapshot = source_latest.get("snapshot") if isinstance(source_latest.get("snapshot"), dict) else {}
+    target_snapshot = target_latest.get("snapshot") if isinstance(target_latest.get("snapshot"), dict) else {}
+    comparison = compare_discovery_snapshots(migration_method, source_snapshot, target_snapshot)
+
+    return {
+        "status": "success",
+        "project": {
+            "name": project_record["name"],
+            "migration_method": migration_method,
+            "source_connection": source_name,
+            "target_connection": target_name,
+        },
+        "snapshots": {
+            "source": _snapshot_api_status("source", source_name, migration_method, source_latest, error_message=errors.get("source")),
+            "target": _snapshot_api_status("target", target_name, migration_method, target_latest, error_message=errors.get("target")),
+        },
+        "summary": comparison["summary"],
+        "sections": comparison["sections"],
+        "diagnostics": {
+            "source_snapshot_file": source_latest.get("file"),
+            "target_snapshot_file": target_latest.get("file"),
+        },
+    }
+
+
 def resolve_cred_wallet_path(wallet_name: Optional[str]) -> str:
     if not wallet_name:
         raise HTTPException(status_code=400, detail="wallet_name is required")
@@ -1963,6 +2259,90 @@ def _validate_wallet_name(name: str) -> str:
             detail="wallet name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
         )
     return name
+
+
+def _credential_wallet_metadata_file_path() -> str:
+    target_dir = os.path.join(MIGRATION_BASE, "wallets")
+    os.makedirs(target_dir, exist_ok=True)
+    return os.path.join(target_dir, "credential_wallets.json")
+
+
+def load_credential_wallet_metadata() -> Dict[str, Dict[str, Any]]:
+    payload = _load_json_file(_credential_wallet_metadata_file_path())
+    wallets = payload.get("wallets") if isinstance(payload, dict) else None
+    if not isinstance(wallets, dict):
+        return {}
+
+    metadata: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw_record in wallets.items():
+        try:
+            name = _validate_wallet_name(str(raw_name))
+        except HTTPException:
+            continue
+        record = raw_record if isinstance(raw_record, dict) else {}
+        credential_username = record.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        metadata[name] = {
+            "name": name,
+            "credential_username": credential_username or None,
+        }
+    return metadata
+
+
+def save_credential_wallet_metadata(metadata: Dict[str, Dict[str, Any]]):
+    wallets: Dict[str, Dict[str, Any]] = {}
+    for raw_name, raw_record in sorted(metadata.items()):
+        try:
+            name = _validate_wallet_name(str(raw_name))
+        except HTTPException:
+            continue
+        record = raw_record if isinstance(raw_record, dict) else {}
+        credential_username = record.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        wallets[name] = {
+            "name": name,
+            "credential_username": credential_username or None,
+        }
+    _save_json_file(_credential_wallet_metadata_file_path(), {"wallets": wallets})
+
+
+def _credential_wallet_metadata_value(wallet_name: str) -> Tuple[bool, Optional[str]]:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    if name not in metadata:
+        return False, None
+    credential_username = metadata[name].get("credential_username")
+    return True, credential_username if isinstance(credential_username, str) and credential_username else None
+
+
+def _upsert_credential_wallet_metadata(wallet_name: str, credential_username: Optional[str]) -> None:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    metadata[name] = {
+        "name": name,
+        "credential_username": (
+            credential_username.strip()
+            if isinstance(credential_username, str) and credential_username.strip()
+            else None
+        ),
+    }
+    save_credential_wallet_metadata(metadata)
+
+
+def _remove_credential_wallet_metadata(wallet_name: str) -> None:
+    name = _validate_wallet_name(wallet_name)
+    metadata = load_credential_wallet_metadata()
+    if name in metadata:
+        metadata.pop(name, None)
+        save_credential_wallet_metadata(metadata)
+
+
+def _credential_wallet_username_for_validation(wallet_name: str) -> Optional[str]:
+    name = _validate_wallet_name(wallet_name)
+    found, credential_username = _credential_wallet_metadata_value(name)
+    return credential_username if found else None
 
 
 def write_temp_script(prefix: str, content: str, project: Optional[str] = None, required: bool = False) -> str:
@@ -2027,24 +2407,15 @@ class DBConnectionParams(StrictRequestModel):
     connection_role: Optional[str] = None
     protocol: Optional[str] = "TCP"
     allow_tls_without_wallet: Optional[bool] = False
-
-
-class DBAuthParams(StrictRequestModel):
-    method: str
-    username: Optional[str] = None
-    password: Optional[str] = None
-    wallet_name: Optional[str] = None
+    credential_wallet_name: Optional[str] = None
 
 
 class DBConnectionCheckParams(StrictRequestModel):
     name: str
-    auth: DBAuthParams
-    run_snapshot: bool = False
 
 
 class DBConnectionDiscoverParams(StrictRequestModel):
     name: str
-    auth: DBAuthParams
     migration_type: str  # OFFLINE_LOGICAL, ONLINE_LOGICAL, OFFLINE_PHYSICAL, ONLINE_PHYSICAL, HYBRID_OFFLINE
     role: Optional[str] = None  # optional tag for future compare views
 
@@ -2054,6 +2425,7 @@ class ProjectParams(StrictRequestModel):
     rsp: Optional[str] = None
     source_connection: Optional[str] = None
     target_connection: Optional[str] = None
+    migration_method: str
 
 
 class PrefillParams(StrictRequestModel):
@@ -2076,6 +2448,7 @@ def create_db_connection(params: DBConnectionParams, username: str = Depends(ver
         payload[key] = value
     payload["name"] = name
     _validate_connection_record_contract(payload)
+    _validate_connection_credential_wallet_for_save(payload)
     api_payload = _dbconnection_api_record(name, payload, "POST /dbconnections", allow_storage_extra=True)
     connections[name] = payload
     save_connections(connections)
@@ -2110,28 +2483,70 @@ def create_project(params: ProjectParams, username: str = Depends(verify_credent
     if name in projects:
         raise HTTPException(status_code=409, detail=f"Project '{name}' already exists. Delete it before creating it again.")
     connections = load_connections()
+    migration_method = _require_migration_method(params.migration_method)
+    try:
+        get_profile(migration_method)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     source_connection = _require_project_connection_role(
         connections,
         params.source_connection,
         "source",
         "source_connection",
+        validate_type=False,
     )
     target_connection = _require_project_connection_role(
         connections,
         params.target_connection,
         "target",
         "target_connection",
+        validate_type=False,
     )
+    source_info = connections[source_connection]
+    target_info = connections[target_connection]
+    _validate_project_connection_wallet(source_info, "source")
+    _validate_project_connection_wallet(target_info, "target")
+    _validate_project_connection_method_support(source_info, "source", migration_method)
+    _validate_project_connection_method_support(target_info, "target", migration_method)
     projects[name] = {
         "name": name,
         "rsp": params.rsp,
         "source_connection": source_connection,
         "target_connection": target_connection,
+        "migration_method": migration_method,
     }
     project_payload = _project_api_record(name, projects[name], "POST /projects")
     projects[name] = project_payload
     save_projects(projects)
     return {"status": "success", "message": f"Project '{name}' saved", "project": project_payload}
+
+
+@app.get("/projects/{project}/database-discovery")
+def get_project_database_discovery(project: str, username: str = Depends(verify_credentials)):
+    return _project_database_discovery_response(project)
+
+
+@app.post("/projects/{project}/database-discovery/refresh")
+def refresh_project_database_discovery(project: str, username: str = Depends(verify_credentials)):
+    (
+        _project_record,
+        _source_info,
+        _target_info,
+        source_name,
+        target_name,
+        migration_method,
+    ) = _database_discovery_project_context(project, require_wallets=True)
+    errors: Dict[str, str] = {}
+    for role, connection_name in (("source", source_name), ("target", target_name)):
+        try:
+            _run_connection_check(
+                DBConnectionDiscoverParams(name=connection_name, migration_type=migration_method),
+                run_snapshot=True,
+                migration_type=migration_method,
+            )
+        except HTTPException as exc:
+            errors[role] = str(exc.detail)
+    return _project_database_discovery_response(project, snapshot_errors=errors)
 
 
 @app.delete("/projects/{name}")
@@ -2248,32 +2663,32 @@ def upload_tls_wallet(name: str, wallet: UploadFile = File(...), username: str =
     }
 
 
-def _resolve_db_auth(auth: DBAuthParams) -> Tuple[Dict[str, Any], Optional[str]]:
-    method = (auth.method or "").strip().lower()
-    if method == "password":
-        if auth.wallet_name:
-            raise HTTPException(status_code=400, detail="auth.wallet_name is not valid for password auth")
-        db_user = (auth.username or "").strip()
-        password = auth.password or ""
-        if not db_user:
-            raise HTTPException(status_code=400, detail="auth.username is required for password auth")
-        if not password:
-            raise HTTPException(status_code=400, detail="auth.password is required for password auth")
-        return {"user": db_user, "password": password}, None
-
-    if method == "credential_wallet":
-        if auth.username or auth.password:
-            raise HTTPException(status_code=400, detail="auth.username and auth.password are not valid for credential wallet auth")
-        wallet_name = (auth.wallet_name or "").strip()
-        wallet_path = resolve_cred_wallet_path(wallet_name)
-        if not os.path.isdir(wallet_path):
-            raise HTTPException(status_code=404, detail=f"Credential wallet '{wallet_name}' not found")
-        credentials = _credential_wallet_credentials(wallet_path)
-        if not credentials:
-            raise HTTPException(status_code=400, detail="Selected wallet has no credential. Add a credential first.")
-        return credentials, None
-
-    raise HTTPException(status_code=400, detail="auth.method must be password or credential_wallet")
+def _resolve_connection_credential_wallet(
+    conn_info: Dict[str, Any],
+    role_label: str = "connection",
+) -> Tuple[Dict[str, Any], str]:
+    wallet_name = str(conn_info.get("credential_wallet_name") or "").strip()
+    if not wallet_name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{role_label.title()} connection is missing a credential wallet. "
+                "Update the DB connection before running this action."
+            ),
+        )
+    wallet_path = resolve_cred_wallet_path(wallet_name)
+    if not os.path.isdir(wallet_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"The credential wallet '{wallet_name}' was not found. Choose another wallet on the DB Connections page.",
+        )
+    credentials = _credential_wallet_credentials(wallet_path)
+    if not credentials:
+        raise HTTPException(
+            status_code=400,
+            detail=f"The {role_label} credential wallet has no stored credential. Add a credential first.",
+        )
+    return credentials, wallet_path
 
 
 def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDiscoverParams], run_snapshot: bool, migration_type: Optional[str] = None):
@@ -2281,7 +2696,7 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
         migration_type = normalize_discovery_migration_type(migration_type)
 
     conn_info = _load_connection_or_404(params.name)
-    auth_kwargs, credential_wallet_location = _resolve_db_auth(params.auth)
+    auth_kwargs, credential_wallet_location = _resolve_connection_credential_wallet(conn_info)
     wallet_location: Optional[str] = None
 
     protocol = (conn_info.get("protocol") or "").upper()
@@ -2293,7 +2708,7 @@ def _run_connection_check(params: Union[DBConnectionCheckParams, DBConnectionDis
 
     protocol = "TCPS" if protocol == "TCPS" else "TCP"
     ssl_match = True if (protocol == "TCPS" and conn_info.get("allow_tls_without_wallet")) else None
-    active_wallet_location = credential_wallet_location or wallet_location
+    active_wallet_location = wallet_location
 
     try:
         oracledb = require_oracledb()
@@ -2635,6 +3050,83 @@ def _credential_wallet_username(wallet_path: str) -> Optional[str]:
     return users[0] if users else None
 
 
+def _credential_wallet_api_record(
+    name: str,
+    path: str,
+    credential_username: Optional[str],
+    endpoint: str = "GET /credential-wallets",
+) -> Dict[str, Any]:
+    record = {
+        "name": _validate_wallet_name(name),
+        "path": str(path or ""),
+        "credential_username": credential_username,
+    }
+    _api_record_keys(record, endpoint, record["name"], {"name", "path", "credential_username"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    _require_api_text(record, endpoint, record["name"], "path")
+    _optional_api_text(record, endpoint, record["name"], "credential_username")
+    return record
+
+
+def _credential_wallet_name_api_record(name: str, endpoint: str = "GET /credential-wallets/names") -> Dict[str, str]:
+    record = {"name": _validate_wallet_name(name)}
+    _api_record_keys(record, endpoint, record["name"], {"name"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    return record
+
+
+def _credential_wallet_path_api_record(
+    name: str,
+    path: str,
+    endpoint: str = "GET /credential-wallets/paths",
+) -> Dict[str, str]:
+    record = {"name": _validate_wallet_name(name), "path": str(path or "")}
+    _api_record_keys(record, endpoint, record["name"], {"name", "path"}, set())
+    _require_api_text(record, endpoint, record["name"], "name")
+    _require_api_text(record, endpoint, record["name"], "path")
+    return record
+
+
+def _credential_wallet_dirs() -> List[Tuple[str, str]]:
+    base_dir = get_cred_wallets_dir()
+    wallets: List[Tuple[str, str]] = []
+    for name in sorted(os.listdir(base_dir)):
+        try:
+            safe_name = _validate_wallet_name(name)
+        except HTTPException:
+            continue
+        path = os.path.join(base_dir, safe_name)
+        if os.path.isdir(path):
+            wallets.append((safe_name, path))
+    return wallets
+
+
+def _credential_wallets_api_response() -> Dict[str, List[Dict[str, Any]]]:
+    metadata = load_credential_wallet_metadata()
+    wallet_dirs = _credential_wallet_dirs()
+    wallets = []
+    for name, path in wallet_dirs:
+        wallet_metadata = metadata.get(name, {})
+        credential_username = wallet_metadata.get("credential_username")
+        if credential_username is not None and not isinstance(credential_username, str):
+            credential_username = None
+        wallets.append(_credential_wallet_api_record(name, path, credential_username))
+    return {"wallets": wallets}
+
+
+def _credential_wallet_names_api_response() -> Dict[str, List[Dict[str, str]]]:
+    return {"wallets": [_credential_wallet_name_api_record(name) for name, _path in _credential_wallet_dirs()]}
+
+
+def _credential_wallet_paths_api_response() -> Dict[str, List[Dict[str, str]]]:
+    return {
+        "wallets": [
+            _credential_wallet_path_api_record(name, path)
+            for name, path in _credential_wallet_dirs()
+        ]
+    }
+
+
 @app.get("/tls-wallets")
 def list_tls_wallets(username: str = Depends(verify_credentials)):
     base_dir = get_tls_wallets_dir()
@@ -2648,35 +3140,17 @@ def list_tls_wallets(username: str = Depends(verify_credentials)):
 
 @app.get("/credential-wallets")
 def list_credential_wallets(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name, "path": path, "credential_username": _credential_wallet_username(path)})
-    return {"wallets": wallets}
+    return _credential_wallets_api_response()
 
 
 @app.get("/credential-wallets/names")
 def list_credential_wallet_names(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name})
-    return {"wallets": wallets}
+    return _credential_wallet_names_api_response()
 
 
 @app.get("/credential-wallets/paths")
 def list_credential_wallet_paths(username: str = Depends(verify_credentials)):
-    base_dir = get_cred_wallets_dir()
-    wallets = []
-    for name in sorted(os.listdir(base_dir)):
-        path = os.path.join(base_dir, name)
-        if os.path.isdir(path):
-            wallets.append({"name": name, "path": path})
-    return {"wallets": wallets}
+    return _credential_wallet_paths_api_response()
 
 
 @app.delete("/credential-wallets/{name}")
@@ -2686,6 +3160,7 @@ def delete_credential_wallet(name: str, username: str = Depends(verify_credentia
     if not os.path.isdir(wallet_path):
         raise HTTPException(status_code=404, detail=f"Credential wallet '{name}' not found")
     shutil.rmtree(wallet_path)
+    _remove_credential_wallet_metadata(name)
     return {"status": "success", "message": f"Credential wallet '{name}' deleted", "name": name}
 
 @app.post("/wallets/ora-pki")
@@ -2714,6 +3189,7 @@ def create_wallet(params: WalletFileParams, username: str = Depends(verify_crede
         error_output = result.stderr.strip()
 
         if result.returncode == 0:
+            _upsert_credential_wallet_metadata(params.wallet_name, None)
             return {"status": "success", "output": output}
         else:
             raise HTTPException(status_code=500, detail={"error": error_output, "output": output})
@@ -2734,7 +3210,8 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
     user = params.user.strip()
     if not user:
         raise HTTPException(status_code=400, detail="user is required")
-    if _credential_wallet_username(wallet_path):
+    metadata_found, metadata_username = _credential_wallet_metadata_value(params.wallet_name)
+    if metadata_found and metadata_username:
         raise HTTPException(
             status_code=409,
             detail="Credential already exists in this wallet. Delete and recreate the wallet if it is wrong.",
@@ -2761,6 +3238,7 @@ def create_credential(params: MkstoreParams, username: str = Depends(verify_cred
         error_output = result.stderr.strip()
 
         if result.returncode == 0:
+            _upsert_credential_wallet_metadata(params.wallet_name, user)
             return {"status": "success", "output": output}
         else:
             raise HTTPException(status_code=500, detail={"error": error_output, "output": output})

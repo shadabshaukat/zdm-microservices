@@ -1,0 +1,188 @@
+schema_version: 1
+
+methods:
+  OFFLINE_LOGICAL:
+    sections:
+      summary:
+        label: Summary
+        rules:
+          - id: database_name
+            label: Database name
+            compare:
+              source_path: db_info.NAME
+              target_path: db_info.NAME
+              operator: informational
+
+          - id: database_unique_name
+            label: DB unique name
+            compare:
+              source_path: db_info.DB_UNIQUE_NAME
+              target_path: db_info.DB_UNIQUE_NAME
+              operator: informational
+
+          - id: connected_container
+            label: Connected container
+            compare:
+              source_path: connected_container.display
+              target_path: connected_container.display
+              operator: informational
+
+      schemas:
+        label: Schemas
+        rules:
+          - id: schema_presence
+            label: Schemas
+            compare:
+              source_path: schemas
+              target_path: schemas
+              operator: set_difference
+            on_source_only:
+              status: difference
+              severity: medium
+              message: Source schemas were not returned on the target.
+              guidance: Confirm these schemas will be created by the migration workflow or pre-created as needed.
+            on_target_only:
+              status: target_only
+              severity: low
+              message: Target-only schemas were found.
+              guidance: Review target-only schemas so they are not confused with migrated application schemas.
+
+      tablespaces:
+        label: Tablespaces
+        rules:
+          - id: tablespace_presence
+            label: Tablespaces
+            compare:
+              source_path: tablespaces
+              target_path: tablespaces
+              operator: set_difference
+            on_source_only:
+              status: difference
+              severity: medium
+              message: Source tablespaces were not returned on the target.
+              guidance: Review tablespace handling before creating the response file.
+            on_target_only:
+              status: target_only
+              severity: low
+              message: Target-only tablespaces were found.
+              guidance: Review target-only tablespaces and confirm they are expected.
+
+      directories:
+        label: Directories
+        rules:
+          - id: directory_paths
+            label: Directories
+            compare:
+              source_path: directories
+              target_path: directories
+              operator: keyed_record_compare
+              key_field: DIRECTORY_NAME
+              label_template: "Directory: {key}"
+              value_field: DIRECTORY_PATH
+              fields:
+                - key: DIRECTORY_PATH
+                  label: Directory path
+                  format: text
+                  compare: true
+            on_fail:
+              status: difference
+              severity: medium
+              message: Directory paths differ between source and target.
+              guidance: Review directory object path expectations for Data Pump and application access.
+            on_source_only:
+              status: difference
+              severity: medium
+              message: Source directory objects were not returned on the target.
+              guidance: Review directory object requirements for Data Pump and application access.
+            on_target_only:
+              status: target_only
+              severity: low
+              message: Target-only directory objects were found.
+              guidance: Confirm target-only directory objects are expected for this database.
+
+      nls_tz:
+        label: NLS & TZ
+        rules:
+          - id: nls_charset_match
+            label: Database character set
+            compare:
+              source_path: nls.NLS_CHARACTERSET
+              target_path: nls.NLS_CHARACTERSET
+              operator: equals
+            on_fail:
+              status: readiness_issue
+              severity: high
+              message: Source and target database character sets differ.
+              guidance: Review character set compatibility before creating the response file.
+
+          - id: nls_nchar_charset_match
+            label: National character set
+            compare:
+              source_path: nls.NLS_NCHAR_CHARACTERSET
+              target_path: nls.NLS_NCHAR_CHARACTERSET
+              operator: equals
+            on_fail:
+              status: readiness_issue
+              severity: high
+              message: Source and target national character sets differ.
+              guidance: Review character set compatibility before creating the response file.
+
+          - id: timezone_version_match
+            label: Timezone file version
+            compare:
+              source_path: timezone.VERSION
+              target_path: timezone.VERSION
+              operator: target_gte_source
+            on_fail:
+              status: readiness_issue
+              severity: medium
+              message: Target timezone file version must be greater than or equal to source timezone file version.
+              guidance: Review timezone compatibility and application timezone behavior before migration.
+
+      profiles:
+        label: Profiles
+        rules:
+          - id: custom_profile_definitions
+            label: Custom profiles
+            compare:
+              source_path: extras.logical_common.db_profiles
+              target_path: extras.logical_common.db_profiles
+              operator: keyed_record_compare
+              key_field: PROFILE
+              label_template: "Profile: {key}"
+              value_field: PROFILE
+              fields:
+                - key: PROFILE_DDL
+                  label: Profile DDL
+                  format: sql
+                  compare: true
+            on_fail:
+              status: readiness_issue
+              severity: high
+              message: Custom profile definitions differ between source and target.
+              guidance: Review profile DDL and plan how these profiles will be recreated or mapped on the target.
+            on_source_only:
+              status: readiness_issue
+              severity: high
+              message: Custom source profiles were found.
+              guidance: Download profile DDL and plan how these profiles will be recreated or mapped on the target.
+            on_target_only:
+              status: target_only
+              severity: low
+              message: Target-only profiles were found.
+              guidance: Confirm target-only profiles are expected.
+
+      cloud_identity:
+        label: Cloud Identity
+        rules:
+          - id: cloud_database_identity
+            label: Cloud database identity
+            compare:
+              source_path: cloud_identity.DATABASE_OCID
+              target_path: cloud_identity.DATABASE_OCID
+              operator: equals
+            on_fail:
+              status: difference
+              severity: low
+              message: Cloud database identity differs or is present on one side only.
+              guidance: This is expected when comparing on-premises sources with cloud targets; confirm the selected target is correct.
